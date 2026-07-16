@@ -1,0 +1,1024 @@
+#import "YTKACEDownloadsController.h"
+#import "YTKACERootOptionsController.h"
+#import "../Runtime/Preferences.h"
+#import "../UI/Assets.h"
+#import "../UI/Notice.h"
+#import "../Features/Downloads/YTKACEDownloadPlayerController.h"
+#import "../Features/Downloads/YTKACEAudioPlayerController.h"
+
+#import <AVFoundation/AVFoundation.h>
+#import <AVKit/AVKit.h>
+#import <objc/message.h>
+
+static NSString *const YTKACEDownloadLibraryChanged =
+    @"YTKACEDownloadLibraryChanged";
+
+static NSArray<NSURL *> *YTKACESidecarURLs(NSURL *URL) {
+    NSURL *base = URL.URLByDeletingPathExtension;
+    return @[
+        [base URLByAppendingPathExtension:@"jpg"],
+        [base URLByAppendingPathExtension:@"ytkace.json"]
+    ];
+}
+
+static NSString *YTKACEDurationText(NSTimeInterval duration) {
+    if (!isfinite(duration) || duration <= 0.0) {
+        return @"--:--";
+    }
+    NSInteger seconds = (NSInteger)llround(duration);
+    NSInteger hours = seconds / 3600;
+    NSInteger minutes = (seconds % 3600) / 60;
+    NSInteger remainder = seconds % 60;
+    if (hours > 0) {
+        return [NSString stringWithFormat:@"%ld:%02ld:%02ld",
+            (long)hours, (long)minutes, (long)remainder];
+    }
+    return [NSString stringWithFormat:@"%ld:%02ld",
+        (long)minutes, (long)remainder];
+}
+
+static NSString *YTKACEResolutionText(CGSize size) {
+    CGFloat height = MIN(fabs(size.width), fabs(size.height));
+    if (height <= 0.0) {
+        return @"";
+    }
+    NSArray<NSNumber *> *standards = @[@144, @240, @360, @480, @720, @1080, @1440, @2160];
+    NSNumber *closest = standards.firstObject;
+    CGFloat distance = CGFLOAT_MAX;
+    for (NSNumber *standard in standards) {
+        CGFloat candidate = fabs(height - standard.doubleValue);
+        if (candidate < distance) {
+            closest = standard;
+            distance = candidate;
+        }
+    }
+    return [NSString stringWithFormat:@"%@p", closest];
+}
+
+static UIAlertAction *YTKACEMenuAction(
+    NSString *title,
+    NSString *symbol,
+    UIAlertActionStyle style,
+    void (^handler)(UIAlertAction *action)
+) {
+    UIAlertAction *action = [UIAlertAction actionWithTitle:title
+                                                     style:style
+                                                   handler:handler];
+    if (symbol.length != 0) {
+        @try {
+            [action setValue:[UIImage systemImageNamed:symbol] forKey:@"image"];
+        } @catch (__unused NSException *exception) {
+        }
+    }
+    return action;
+}
+
+@interface YTKACEMiniPlayerView : UIView
+@property(nonatomic, strong) AVPlayer *player;
+@end
+
+@implementation YTKACEMiniPlayerView
++ (Class)layerClass { return AVPlayerLayer.class; }
+- (void)setPlayer:(AVPlayer *)player {
+    _player = player;
+    AVPlayerLayer *layer = (AVPlayerLayer *)self.layer;
+    layer.player = player;
+    layer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+}
+@end
+
+@interface YTKACEDownloadCell : UICollectionViewCell
+@property(nonatomic, strong) UIView *cardView;
+@property(nonatomic, strong) UIImageView *thumbnailView;
+@property(nonatomic, strong) UIImageView *placeholderView;
+@property(nonatomic, strong) UILabel *resolutionLabel;
+@property(nonatomic, strong) UILabel *durationLabel;
+@property(nonatomic, strong) UILabel *nameLabel;
+@property(nonatomic, strong) UILabel *metadataLabel;
+@property(nonatomic, copy) NSString *representedPath;
+@property(nonatomic, assign) NSInteger layoutMode;
+@end
+
+@implementation YTKACEDownloadCell
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self == nil) {
+        return nil;
+    }
+    self.cardView = [UIView new];
+    self.cardView.layer.cornerRadius = 12.0;
+    self.cardView.layer.masksToBounds = YES;
+    self.thumbnailView = [UIImageView new];
+    self.thumbnailView.backgroundColor = [UIColor colorWithWhite:0.13 alpha:1.0];
+    self.thumbnailView.contentMode = UIViewContentModeScaleAspectFill;
+    self.thumbnailView.clipsToBounds = YES;
+    self.placeholderView = [[UIImageView alloc] initWithImage:
+        [[UIImage systemImageNamed:@"video.slash.fill"]
+            imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]];
+    self.placeholderView.tintColor = [UIColor colorWithWhite:0.38 alpha:1.0];
+    self.placeholderView.contentMode = UIViewContentModeScaleAspectFit;
+    self.resolutionLabel = [self badgeLabel];
+    self.durationLabel = [self badgeLabel];
+    self.nameLabel = [UILabel new];
+    self.nameLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
+    self.nameLabel.numberOfLines = 2;
+    self.metadataLabel = [UILabel new];
+    self.metadataLabel.font = [UIFont systemFontOfSize:12.0];
+    self.metadataLabel.textColor = UIColor.secondaryLabelColor;
+    [self.contentView addSubview:self.cardView];
+    [self.cardView addSubview:self.thumbnailView];
+    [self.thumbnailView addSubview:self.placeholderView];
+    [self.cardView addSubview:self.resolutionLabel];
+    [self.cardView addSubview:self.durationLabel];
+    [self.cardView addSubview:self.nameLabel];
+    [self.cardView addSubview:self.metadataLabel];
+    return self;
+}
+
+- (UILabel *)badgeLabel {
+    UILabel *label = [UILabel new];
+    label.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.82];
+    label.textColor = UIColor.whiteColor;
+    label.font = [UIFont systemFontOfSize:10.0 weight:UIFontWeightSemibold];
+    label.textAlignment = NSTextAlignmentCenter;
+    label.layer.cornerRadius = 3.0;
+    label.layer.masksToBounds = YES;
+    return label;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat width = CGRectGetWidth(self.contentView.bounds);
+    CGFloat height = CGRectGetHeight(self.contentView.bounds);
+    if (self.layoutMode == 0) {
+        CGFloat cardWidth = MIN(520.0, width - 20.0);
+        self.cardView.frame = CGRectMake((width - cardWidth) * 0.5, 7.0,
+                                         cardWidth, height - 14.0);
+        self.thumbnailView.frame = CGRectMake(0.0, 0.0, cardWidth, 188.0);
+        self.placeholderView.frame = CGRectMake((cardWidth - 92.0) * 0.5, 48.0, 92.0, 92.0);
+        self.resolutionLabel.frame = CGRectMake(9.0, 159.0, 42.0, 21.0);
+        self.durationLabel.frame = CGRectMake(cardWidth - 59.0, 159.0, 50.0, 21.0);
+        self.nameLabel.frame = CGRectMake(11.0, 196.0, cardWidth - 22.0, 38.0);
+        self.metadataLabel.frame = CGRectMake(11.0, 237.0, cardWidth - 22.0, 18.0);
+    } else if (self.layoutMode == 1) {
+        self.cardView.frame = CGRectMake(9.0, 5.0, width - 18.0, height - 10.0);
+        CGFloat cardHeight = CGRectGetHeight(self.cardView.bounds);
+        self.thumbnailView.frame = CGRectMake(0.0, 0.0, 116.0, cardHeight);
+        self.placeholderView.frame = CGRectMake(35.0, 17.0, 46.0, 46.0);
+        self.resolutionLabel.frame = CGRectMake(7.0, cardHeight - 25.0, 42.0, 19.0);
+        self.durationLabel.frame = CGRectMake(width - 76.0, cardHeight - 25.0, 44.0, 19.0);
+        self.nameLabel.frame = CGRectMake(128.0, 9.0, width - 160.0, 38.0);
+        self.metadataLabel.frame = CGRectMake(128.0, cardHeight - 27.0, width - 205.0, 18.0);
+    } else {
+        self.cardView.frame = CGRectInset(self.contentView.bounds, 3.0, 4.0);
+        CGFloat cardWidth = CGRectGetWidth(self.cardView.bounds);
+        self.thumbnailView.frame = CGRectMake(0.0, 0.0, cardWidth, 112.0);
+        self.placeholderView.frame = CGRectMake((cardWidth - 56.0) * 0.5, 25.0, 56.0, 56.0);
+        self.resolutionLabel.frame = CGRectMake(7.0, 86.0, 42.0, 19.0);
+        self.durationLabel.frame = CGRectMake(cardWidth - 51.0, 7.0, 44.0, 19.0);
+        self.nameLabel.frame = CGRectMake(7.0, 118.0, cardWidth - 14.0, 35.0);
+        self.metadataLabel.frame = CGRectMake(7.0, 155.0, cardWidth - 14.0, 17.0);
+        self.metadataLabel.textAlignment = NSTextAlignmentRight;
+    }
+}
+
+- (void)prepareForReuse {
+    [super prepareForReuse];
+    self.representedPath = nil;
+    self.thumbnailView.image = nil;
+    self.placeholderView.hidden = NO;
+    self.resolutionLabel.text = @"Video";
+    self.durationLabel.text = @"--:--";
+    self.metadataLabel.textAlignment = NSTextAlignmentLeft;
+}
+
+@end
+
+@interface YTKACEDownloadsController ()
+    <UICollectionViewDataSource, UICollectionViewDelegateFlowLayout,
+     UIGestureRecognizerDelegate>
+@property(nonatomic, strong) UIStackView *controlBar;
+@property(nonatomic, strong) UISegmentedControl *segmentedControl;
+@property(nonatomic, strong) UICollectionView *collectionView;
+@property(nonatomic, strong) UILabel *emptyLabel;
+@property(nonatomic, strong) UIButton *libraryButton;
+@property(nonatomic, strong) UIButton *sortButton;
+@property(nonatomic, copy) NSArray<NSURL *> *files;
+@property(nonatomic, assign) NSInteger layoutMode;
+@property(nonatomic, assign) NSInteger sortMode;
+@property(nonatomic, strong) NSCache<NSString *, NSDictionary *> *metadataCache;
+@property(nonatomic, strong) UIView *miniPlayerBar;
+@property(nonatomic, strong) YTKACEMiniPlayerView *miniVideoView;
+@property(nonatomic, strong) UILabel *miniTitleLabel;
+@property(nonatomic, strong) UILabel *miniSubtitleLabel;
+@property(nonatomic, strong) UIButton *miniPlayButton;
+@end
+
+@implementation YTKACEDownloadsController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.accessibilityIdentifier = @"YTKACEDownloadsRoot";
+    self.title = @"Downloads";
+    self.layoutMode = 0;
+    self.sortMode = 0;
+    self.metadataCache = [NSCache new];
+    self.segmentedControl =
+        [[UISegmentedControl alloc] initWithItems:@[@"Video", @"Audio", @"Shorts"]];
+    self.segmentedControl.selectedSegmentIndex = 0;
+    [self.segmentedControl addTarget:self action:@selector(segmentChanged)
+                    forControlEvents:UIControlEventValueChanged];
+
+    UIButton *settingsButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.libraryButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.sortButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [settingsButton setImage:[[YTKACEAssetImage(@"gear_24pt_3x_Normal", @"gearshape")
+        imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]
+        imageWithAlignmentRectInsets:UIEdgeInsetsMake(-1.0, -1.0, -1.0, -1.0)]
+                    forState:UIControlStateNormal];
+    [self applyLayoutButtonImage];
+    [self.sortButton setImage:[[YTKACEAssetImage(@"sort_24pt_3x_Normal", @"arrow.down.circle")
+        imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]
+        imageWithAlignmentRectInsets:UIEdgeInsetsMake(-1.0, -1.0, -1.0, -1.0)]
+                       forState:UIControlStateNormal];
+    for (UIButton *button in @[settingsButton, self.libraryButton, self.sortButton]) {
+        button.tintColor = UIColor.labelColor;
+        [button.widthAnchor constraintEqualToConstant:36.0].active = YES;
+    }
+    [settingsButton addTarget:self action:@selector(openSettings)
+             forControlEvents:UIControlEventTouchUpInside];
+    [self.sortButton addTarget:self action:@selector(toggleSort)
+             forControlEvents:UIControlEventTouchUpInside];
+    [self.libraryButton addTarget:self action:@selector(toggleLayout)
+             forControlEvents:UIControlEventTouchUpInside];
+
+    self.controlBar = [[UIStackView alloc] initWithArrangedSubviews:@[
+        self.segmentedControl, settingsButton, self.libraryButton, self.sortButton
+    ]];
+    self.controlBar.axis = UILayoutConstraintAxisHorizontal;
+    self.controlBar.spacing = 5.0;
+    self.controlBar.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UICollectionViewFlowLayout *layout = [UICollectionViewFlowLayout new];
+    layout.minimumLineSpacing = 0.0;
+    self.collectionView = [[UICollectionView alloc] initWithFrame:CGRectZero
+                                              collectionViewLayout:layout];
+    self.collectionView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.collectionView.dataSource = self;
+    self.collectionView.delegate = self;
+    self.collectionView.alwaysBounceVertical = YES;
+    [self.collectionView registerClass:YTKACEDownloadCell.class
+             forCellWithReuseIdentifier:@"YTKACEDownloadCell"];
+    self.emptyLabel = [UILabel new];
+    self.emptyLabel.text = @"No Downloads";
+    self.emptyLabel.textColor = UIColor.secondaryLabelColor;
+    self.emptyLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+    self.emptyLabel.textAlignment = NSTextAlignmentCenter;
+    self.emptyLabel.translatesAutoresizingMaskIntoConstraints = NO;
+
+    [self.view addSubview:self.controlBar];
+    [self.view addSubview:self.collectionView];
+    [self.view addSubview:self.emptyLabel];
+    [self buildMiniPlayer];
+    UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [self.controlBar.topAnchor constraintEqualToAnchor:safeArea.topAnchor constant:8.0],
+        [self.controlBar.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:14.0],
+        [self.controlBar.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-10.0],
+        [self.controlBar.heightAnchor constraintEqualToConstant:34.0],
+        [self.collectionView.topAnchor constraintEqualToAnchor:self.controlBar.bottomAnchor constant:4.0],
+        [self.collectionView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.collectionView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.collectionView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.emptyLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [self.emptyLabel.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor]
+    ]];
+    [NSNotificationCenter.defaultCenter addObserver:self
+        selector:@selector(downloadPlaybackChanged:)
+        name:YTKACEDownloadPlaybackDidChangeNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self
+        selector:@selector(downloadPlaybackStopped:)
+        name:YTKACEDownloadPlaybackDidStopNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self
+        selector:@selector(downloadLibraryChanged:)
+        name:YTKACEDownloadLibraryChanged object:nil];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    YTKACEApplyAppearance(self);
+    UIColor *background = YTKACEFeatureEnabled(YTKACEOLEDKey)
+        ? UIColor.blackColor
+        : UIColor.systemBackgroundColor;
+    self.view.backgroundColor = background;
+    self.collectionView.backgroundColor = background;
+    [self reloadFiles];
+    [self updateMiniPlayer];
+}
+
+- (void)dealloc {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)closeDownloads {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)buildMiniPlayer {
+    self.miniPlayerBar = [UIView new];
+    self.miniPlayerBar.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.98];
+    self.miniPlayerBar.layer.cornerRadius = 11.0;
+    self.miniPlayerBar.layer.masksToBounds = YES;
+    self.miniPlayerBar.translatesAutoresizingMaskIntoConstraints = NO;
+    self.miniPlayerBar.hidden = YES;
+    [self.view addSubview:self.miniPlayerBar];
+
+    self.miniVideoView = [YTKACEMiniPlayerView new];
+    self.miniVideoView.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
+    self.miniVideoView.clipsToBounds = YES;
+    self.miniVideoView.layer.cornerRadius = 8.0;
+    self.miniVideoView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.miniTitleLabel = [UILabel new];
+    self.miniTitleLabel.textColor = UIColor.whiteColor;
+    self.miniTitleLabel.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    self.miniTitleLabel.numberOfLines = 1;
+    self.miniSubtitleLabel = [UILabel new];
+    self.miniSubtitleLabel.textColor = UIColor.secondaryLabelColor;
+    self.miniSubtitleLabel.font = [UIFont systemFontOfSize:10.0];
+    UIStackView *labels = [[UIStackView alloc] initWithArrangedSubviews:@[
+        self.miniTitleLabel, self.miniSubtitleLabel
+    ]];
+    labels.axis = UILayoutConstraintAxisVertical;
+    labels.spacing = 2.0;
+
+    self.miniPlayButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.miniPlayButton.tintColor = UIColor.whiteColor;
+    [self.miniPlayButton addTarget:self action:@selector(toggleMiniPlayback)
+                  forControlEvents:UIControlEventTouchUpInside];
+    UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
+    close.tintColor = UIColor.secondaryLabelColor;
+    [close setImage:[UIImage systemImageNamed:@"xmark.circle.fill"]
+           forState:UIControlStateNormal];
+    [close addTarget:self action:@selector(closeMiniPlayer)
+      forControlEvents:UIControlEventTouchUpInside];
+    UIStackView *content = [[UIStackView alloc] initWithArrangedSubviews:@[
+        self.miniVideoView, labels, self.miniPlayButton, close
+    ]];
+    content.axis = UILayoutConstraintAxisHorizontal;
+    content.alignment = UIStackViewAlignmentCenter;
+    content.spacing = 9.0;
+    content.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.miniVideoView.widthAnchor constraintEqualToConstant:72.0].active = YES;
+    [self.miniVideoView.heightAnchor constraintEqualToConstant:48.0].active = YES;
+    [self.miniPlayButton.widthAnchor constraintEqualToConstant:32.0].active = YES;
+    [close.widthAnchor constraintEqualToConstant:24.0].active = YES;
+    [self.miniPlayerBar addSubview:content];
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
+        initWithTarget:self action:@selector(openMiniPlayer)];
+    tap.delegate = self;
+    [self.miniPlayerBar addGestureRecognizer:tap];
+
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [self.miniPlayerBar.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:10.0],
+        [self.miniPlayerBar.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-10.0],
+        [self.miniPlayerBar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-7.0],
+        [self.miniPlayerBar.heightAnchor constraintEqualToConstant:58.0],
+        [content.topAnchor constraintEqualToAnchor:self.miniPlayerBar.topAnchor constant:5.0],
+        [content.leadingAnchor constraintEqualToAnchor:self.miniPlayerBar.leadingAnchor constant:5.0],
+        [content.trailingAnchor constraintEqualToAnchor:self.miniPlayerBar.trailingAnchor constant:-7.0],
+        [content.bottomAnchor constraintEqualToAnchor:self.miniPlayerBar.bottomAnchor constant:-5.0]
+    ]];
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+       shouldReceiveTouch:(UITouch *)touch {
+    (void)gestureRecognizer;
+    return ![touch.view isKindOfClass:UIControl.class];
+}
+
+- (void)downloadPlaybackChanged:(NSNotification *)notification {
+    (void)notification;
+    [self updateMiniPlayer];
+}
+
+- (void)downloadPlaybackStopped:(NSNotification *)notification {
+    (void)notification;
+    [self updateMiniPlayer];
+}
+
+- (void)downloadLibraryChanged:(NSNotification *)notification {
+    (void)notification;
+    [self.metadataCache removeAllObjects];
+    [self reloadFiles];
+}
+
+- (void)updateMiniPlayer {
+    YTKACEDownloadPlaybackSession *session =
+        YTKACEDownloadPlaybackSession.sharedSession;
+    NSURL *URL = session.currentURL;
+    BOOL active = URL != nil;
+    self.miniPlayerBar.hidden = !active;
+    self.collectionView.contentInset = UIEdgeInsetsMake(0.0, 0.0,
+        active ? 74.0 : 0.0, 0.0);
+    self.collectionView.scrollIndicatorInsets = self.collectionView.contentInset;
+    if (!active) {
+        self.miniVideoView.player = nil;
+        return;
+    }
+    self.miniTitleLabel.text = URL.lastPathComponent.stringByDeletingPathExtension;
+    self.miniSubtitleLabel.text = [self.segmentedControl titleForSegmentAtIndex:
+        self.segmentedControl.selectedSegmentIndex];
+    NSString *symbol = session.player.rate == 0.0f ? @"play.fill" : @"pause.fill";
+    [self.miniPlayButton setImage:[UIImage systemImageNamed:symbol]
+                         forState:UIControlStateNormal];
+    self.miniVideoView.player = session.player;
+}
+
+- (void)toggleMiniPlayback {
+    [YTKACEDownloadPlaybackSession.sharedSession togglePlayback];
+    [self updateMiniPlayer];
+}
+
+- (void)closeMiniPlayer {
+    [YTKACEDownloadPlaybackSession.sharedSession stop];
+}
+
+- (void)openMiniPlayer {
+    if (YTKACEDownloadPlaybackSession.sharedSession.currentURL == nil ||
+        self.presentedViewController != nil) {
+        return;
+    }
+    BOOL audio = [YTKACEDownloadPlaybackSession.sharedSession.currentURL.path
+        containsString:@"/Downloads/Audio/"];
+    UIViewController *player = audio
+        ? [[YTKACEAudioPlayerController alloc]
+            initWithSession:YTKACEDownloadPlaybackSession.sharedSession]
+        : [[YTKACEDownloadPlayerController alloc]
+            initWithSession:YTKACEDownloadPlaybackSession.sharedSession];
+    self.miniVideoView.player = nil;
+    __weak YTKACEDownloadsController *weakSelf = self;
+    if ([player isKindOfClass:YTKACEAudioPlayerController.class]) {
+        ((YTKACEAudioPlayerController *)player).minimizeHandler = ^{
+            [weakSelf updateMiniPlayer];
+        };
+    } else {
+        ((YTKACEDownloadPlayerController *)player).minimizeHandler = ^{
+            [weakSelf updateMiniPlayer];
+        };
+    }
+    [self presentViewController:player animated:YES completion:nil];
+}
+
+- (void)openSettings {
+    [self presentViewController:YTKACEMakeSettingsNavigationController()
+                       animated:YES completion:nil];
+}
+
+- (NSURL *)selectedDirectory {
+    NSArray<NSString *> *names = @[@"Video", @"Audio", @"Shorts"];
+    NSInteger index = MAX(0, MIN(self.segmentedControl.selectedSegmentIndex, 2));
+    NSURL *downloads = [YTKACEApplicationSupportDirectory()
+        URLByAppendingPathComponent:@"Downloads" isDirectory:YES];
+    NSURL *directory = [downloads URLByAppendingPathComponent:names[(NSUInteger)index]
+                                                  isDirectory:YES];
+    [NSFileManager.defaultManager createDirectoryAtURL:directory
+                           withIntermediateDirectories:YES
+                                            attributes:nil error:nil];
+    return directory;
+}
+
+- (void)reloadFiles {
+    NSArray<NSURL *> *contents =
+        [NSFileManager.defaultManager contentsOfDirectoryAtURL:self.selectedDirectory
+                                   includingPropertiesForKeys:@[
+                                       NSURLContentModificationDateKey,
+                                       NSURLFileSizeKey,
+                                       NSURLIsRegularFileKey
+                                   ] options:NSDirectoryEnumerationSkipsHiddenFiles error:nil] ?: @[];
+    NSPredicate *regular = [NSPredicate predicateWithBlock:
+        ^BOOL(NSURL *url, NSDictionary<NSString *, id> *bindings) {
+            (void)bindings;
+            NSNumber *value = nil;
+            [url getResourceValue:&value forKey:NSURLIsRegularFileKey error:nil];
+            static NSSet<NSString *> *extensions;
+            static dispatch_once_t onceToken;
+            dispatch_once(&onceToken, ^{
+                extensions = [NSSet setWithArray:@[
+                    @"mp4", @"m4v", @"mov", @"m4a", @"mp3", @"aac", @"webm"
+                ]];
+            });
+            return value.boolValue &&
+                [extensions containsObject:url.pathExtension.lowercaseString];
+        }];
+    NSArray<NSURL *> *filtered = [contents filteredArrayUsingPredicate:regular];
+    self.files = [filtered sortedArrayUsingComparator:
+        ^NSComparisonResult(NSURL *left, NSURL *right) {
+            if (self.sortMode >= 2) {
+                NSComparisonResult result = [left.lastPathComponent
+                    localizedCaseInsensitiveCompare:right.lastPathComponent];
+                return self.sortMode == 2 ? result : (NSComparisonResult)(-result);
+            }
+            NSDate *leftDate = nil;
+            NSDate *rightDate = nil;
+            [left getResourceValue:&leftDate forKey:NSURLContentModificationDateKey error:nil];
+            [right getResourceValue:&rightDate forKey:NSURLContentModificationDateKey error:nil];
+            NSComparisonResult result = [leftDate ?: NSDate.distantPast
+                compare:rightDate ?: NSDate.distantPast];
+            return self.sortMode == 1 ? result : (NSComparisonResult)(-result);
+        }];
+    self.emptyLabel.hidden = self.files.count != 0;
+    self.collectionView.hidden = self.files.count == 0;
+    [self.collectionView reloadData];
+}
+
+- (void)segmentChanged {
+    [self reloadFiles];
+}
+
+- (void)toggleSort {
+    self.sortMode = (self.sortMode + 1) % 4;
+    NSArray *assets = @[@"sort_down", @"sort_up", @"a-z", @"z-a"];
+    NSArray *symbols = @[@"arrow.down.circle", @"arrow.up.circle", @"a.circle", @"z.circle"];
+    [self.sortButton setImage:[YTKACEAssetImage(assets[(NSUInteger)self.sortMode],
+                                                symbols[(NSUInteger)self.sortMode])
+        imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]
+                       forState:UIControlStateNormal];
+    [self reloadFiles];
+}
+
+- (void)applyLayoutButtonImage {
+    NSArray *assets = @[
+        @"yt_outline_subscriptions_black_24pt",
+        @"ig_icon_edit_list_outline_24_Normal",
+        @"player_multiview_24pt_2x_Normal"
+    ];
+    NSArray *symbols = @[@"play.rectangle", @"list.bullet", @"square.grid.2x2"];
+    UIImage *image = [YTKACEAssetImage(assets[(NSUInteger)self.layoutMode],
+                                      symbols[(NSUInteger)self.layoutMode])
+        imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    [self.libraryButton setImage:image forState:UIControlStateNormal];
+}
+
+- (void)toggleLayout {
+    self.layoutMode = (self.layoutMode + 1) % 3;
+    [self applyLayoutButtonImage];
+    [self.collectionView.collectionViewLayout invalidateLayout];
+    [self.collectionView reloadData];
+}
+
+- (NSInteger)collectionView:(UICollectionView *)collectionView
+     numberOfItemsInSection:(NSInteger)section {
+    (void)collectionView;
+    (void)section;
+    return (NSInteger)self.files.count;
+}
+
+- (CGSize)collectionView:(UICollectionView *)collectionView
+                   layout:(UICollectionViewLayout *)collectionViewLayout
+   sizeForItemAtIndexPath:(NSIndexPath *)indexPath {
+    (void)collectionViewLayout;
+    (void)indexPath;
+    CGFloat width = CGRectGetWidth(collectionView.bounds);
+    if (self.layoutMode == 0) {
+        return CGSizeMake(width, 286.0);
+    }
+    if (self.layoutMode == 1) {
+        return CGSizeMake(width, 92.0);
+    }
+    return CGSizeMake(floor((width - 18.0) * 0.5), 184.0);
+}
+
+- (UIEdgeInsets)collectionView:(UICollectionView *)collectionView
+                        layout:(UICollectionViewLayout *)collectionViewLayout
+        insetForSectionAtIndex:(NSInteger)section {
+    (void)collectionView;
+    (void)collectionViewLayout;
+    (void)section;
+    return self.layoutMode == 2
+        ? UIEdgeInsetsMake(4.0, 6.0, 18.0, 6.0)
+        : UIEdgeInsetsMake(3.0, 0.0, 18.0, 0.0);
+}
+
+- (CGFloat)collectionView:(UICollectionView *)collectionView
+                    layout:(UICollectionViewLayout *)collectionViewLayout
+minimumInteritemSpacingForSectionAtIndex:(NSInteger)section {
+    (void)collectionView;
+    (void)collectionViewLayout;
+    (void)section;
+    return self.layoutMode == 2 ? 6.0 : 0.0;
+}
+
+- (UICollectionViewCell *)collectionView:(UICollectionView *)collectionView
+                   cellForItemAtIndexPath:(NSIndexPath *)indexPath {
+    YTKACEDownloadCell *cell = [collectionView
+        dequeueReusableCellWithReuseIdentifier:@"YTKACEDownloadCell"
+                                  forIndexPath:indexPath];
+    NSURL *url = self.files[(NSUInteger)indexPath.item];
+    NSNumber *size = nil;
+    [url getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
+    cell.layoutMode = self.layoutMode;
+    cell.representedPath = url.path;
+    cell.nameLabel.text = url.lastPathComponent.stringByDeletingPathExtension;
+    cell.metadataLabel.text = [NSByteCountFormatter stringFromByteCount:size.longLongValue
+                                                              countStyle:NSByteCountFormatterCountStyleFile];
+    cell.thumbnailView.image = nil;
+    cell.placeholderView.hidden = NO;
+    cell.resolutionLabel.text = @"Video";
+    cell.durationLabel.text = @"--:--";
+    cell.cardView.backgroundColor = YTKACEFeatureEnabled(YTKACEOLEDKey)
+        ? [UIColor colorWithWhite:0.12 alpha:1.0]
+        : UIColor.secondarySystemBackgroundColor;
+    BOOL hasLongPress = NO;
+    for (UIGestureRecognizer *recognizer in cell.gestureRecognizers) {
+        if ([recognizer isKindOfClass:UILongPressGestureRecognizer.class]) {
+            hasLongPress = YES;
+            break;
+        }
+    }
+    if (!hasLongPress) {
+        UILongPressGestureRecognizer *press =
+            [[UILongPressGestureRecognizer alloc] initWithTarget:self
+                                                         action:@selector(cellHeld:)];
+        press.minimumPressDuration = 0.25;
+        [cell addGestureRecognizer:press];
+    }
+    [cell setNeedsLayout];
+    [self loadMetadataForURL:url cell:cell size:size.longLongValue];
+    return cell;
+}
+
+- (void)loadMetadataForURL:(NSURL *)url
+                       cell:(YTKACEDownloadCell *)cell
+                       size:(long long)size {
+    NSDictionary *cached = [self.metadataCache objectForKey:url.path];
+    if (cached != nil) {
+        [self applyMetadata:cached toCell:cell path:url.path size:size];
+        return;
+    }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
+        NSTimeInterval duration = CMTimeGetSeconds(asset.duration);
+        AVAssetTrack *track = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
+        CGSize dimensions = track == nil ? CGSizeZero
+            : CGSizeApplyAffineTransform(track.naturalSize, track.preferredTransform);
+        NSURL *sidecarURL = [[url URLByDeletingPathExtension]
+            URLByAppendingPathExtension:@"jpg"];
+        UIImage *thumbnail = [UIImage imageWithContentsOfFile:sidecarURL.path];
+        if (thumbnail == nil && track != nil) {
+            AVAssetImageGenerator *generator =
+                [AVAssetImageGenerator assetImageGeneratorWithAsset:asset];
+            generator.appliesPreferredTrackTransform = YES;
+            generator.maximumSize = CGSizeMake(1040.0, 588.0);
+            CGImageRef image = [generator copyCGImageAtTime:
+                CMTimeMakeWithSeconds(duration > 2.0 ? 1.0 : 0.0, 600)
+                                                    actualTime:NULL error:nil];
+            if (image != NULL) {
+                thumbnail = [UIImage imageWithCGImage:image];
+                CGImageRelease(image);
+            }
+        }
+        NSDictionary *metadata = @{
+            @"duration": YTKACEDurationText(duration),
+            @"resolution": YTKACEResolutionText(dimensions),
+            @"image": thumbnail ?: NSNull.null
+        };
+        [self.metadataCache setObject:metadata forKey:url.path];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self applyMetadata:metadata toCell:cell path:url.path size:size];
+        });
+    });
+}
+
+- (void)applyMetadata:(NSDictionary *)metadata
+                toCell:(YTKACEDownloadCell *)cell
+                  path:(NSString *)path
+                  size:(long long)size {
+    if (![cell.representedPath isEqualToString:path]) {
+        return;
+    }
+    NSString *duration = metadata[@"duration"];
+    NSString *resolution = metadata[@"resolution"];
+    UIImage *image = [metadata[@"image"] isKindOfClass:UIImage.class]
+        ? metadata[@"image"] : nil;
+    cell.durationLabel.text = duration;
+    cell.resolutionLabel.text = resolution.length != 0 ? resolution : @"Audio";
+    NSString *sizeText = [NSByteCountFormatter stringFromByteCount:size
+                                                        countStyle:NSByteCountFormatterCountStyleFile];
+    cell.metadataLabel.text = cell.layoutMode == 2
+        ? sizeText
+        : [NSString stringWithFormat:@"%@  |  %@", sizeText, duration];
+    cell.thumbnailView.image = image;
+    cell.placeholderView.hidden = image != nil;
+}
+
+- (void)collectionView:(UICollectionView *)collectionView
+didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
+    (void)collectionView;
+    NSURL *URL = self.files[(NSUInteger)indexPath.item];
+    YTKACEDownloadPlaybackSession *session =
+        YTKACEDownloadPlaybackSession.sharedSession;
+    [session loadURL:URL playlist:self.files index:indexPath.item];
+    [self openMiniPlayer];
+}
+
+- (void)playURLWithSystemPlayer:(NSURL *)url {
+    AVPlayerViewController *playerController = [AVPlayerViewController new];
+    playerController.player = [AVPlayer playerWithURL:url];
+    playerController.modalPresentationStyle = UIModalPresentationFullScreen;
+    [self presentViewController:playerController animated:YES completion:^{
+        [playerController.player play];
+    }];
+}
+
+- (void)cellHeld:(UILongPressGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateBegan) {
+        return;
+    }
+    YTKACEDownloadCell *cell = [gesture.view isKindOfClass:YTKACEDownloadCell.class]
+        ? (YTKACEDownloadCell *)gesture.view
+        : nil;
+    NSIndexPath *indexPath = cell == nil
+        ? nil
+        : [self.collectionView indexPathForCell:cell];
+    if (indexPath == nil) {
+        return;
+    }
+    UIImpactFeedbackGenerator *feedback =
+        [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [feedback impactOccurred];
+    [self showItemMenuForURL:self.files[(NSUInteger)indexPath.item]
+                  sourceView:cell];
+}
+
+- (id)nativeActionWithTitle:(NSString *)title
+                       asset:(NSString *)asset
+                      symbol:(NSString *)symbol
+                     handler:(void (^)(UIAlertAction *action))handler {
+    Class actionClass = NSClassFromString(@"YTActionSheetAction");
+    SEL selector = NSSelectorFromString(@"actionWithTitle:iconImage:style:handler:");
+    if (actionClass == Nil || ![actionClass respondsToSelector:selector]) {
+        return nil;
+    }
+    UIImage *image = [YTKACEAssetImage(asset, symbol)
+        imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    return ((id (*)(id, SEL, id, id, NSInteger, id))objc_msgSend)(
+        actionClass, selector, title, image, 0, handler
+    );
+}
+
+- (BOOL)showNativeMenuForURL:(NSURL *)url sourceView:(UIView *)sourceView {
+    Class sheetClass = NSClassFromString(@"YTDefaultSheetController");
+    SEL factory = NSSelectorFromString(
+        @"sheetControllerWithMessage:subMessage:delegate:parentResponder:"
+    );
+    if (sheetClass == Nil || ![sheetClass respondsToSelector:factory]) {
+        return NO;
+    }
+    NSString *title = url.lastPathComponent.stringByDeletingPathExtension;
+    id sheet = ((id (*)(id, SEL, id, id, id, id))objc_msgSend)(
+        sheetClass, factory, @"", title, nil, nil
+    );
+    if (sheet == nil) {
+        return NO;
+    }
+    @try {
+        id header = [sheet valueForKey:@"_headerView"];
+        SEL divider = NSSelectorFromString(@"showHeaderDivider");
+        if ([header respondsToSelector:divider]) {
+            ((void (*)(id, SEL))objc_msgSend)(header, divider);
+        }
+    } @catch (__unused NSException *exception) {
+    }
+    NSArray *actions = @[
+        [self nativeActionWithTitle:@"Default Player" asset:@"ig_icon_play_outline_24_Normal"
+                             symbol:@"play" handler:^(__unused UIAlertAction *action) {
+            [self playURLWithSystemPlayer:url];
+        }] ?: NSNull.null,
+        [self nativeActionWithTitle:@"Video Info" asset:@"ic_info_outline_3x_Normal"
+                             symbol:@"info.circle" handler:^(__unused UIAlertAction *action) {
+            [self showInfoForURL:url];
+        }] ?: NSNull.null,
+        [self nativeActionWithTitle:@"Save to Photos" asset:@"ig_icon_photo_outline_24_Normal"
+                             symbol:@"photo" handler:^(__unused UIAlertAction *action) {
+            UISaveVideoAtPathToSavedPhotosAlbum(url.path, nil, nil, NULL);
+        }] ?: NSNull.null,
+        [self nativeActionWithTitle:@"Save Artwork" asset:@"ig_icon_photo_gallery_outline_24_Normal"
+                             symbol:@"photo.on.rectangle" handler:^(__unused UIAlertAction *action) {
+            [self saveArtworkForURL:url];
+        }] ?: NSNull.null,
+        [self nativeActionWithTitle:@"Share" asset:@"share_24pt_3x_Normal"
+                             symbol:@"square.and.arrow.up" handler:^(__unused UIAlertAction *action) {
+            [self shareURL:url sourceView:sourceView];
+        }] ?: NSNull.null,
+        [self nativeActionWithTitle:@"Delete" asset:@"delete_24pt_3x_Normal"
+                             symbol:@"trash" handler:^(__unused UIAlertAction *action) {
+            [self deleteURL:url];
+        }] ?: NSNull.null,
+        [self nativeActionWithTitle:@"Rename" asset:@"pencil_24pt_3x_Normal"
+                             symbol:@"pencil" handler:^(__unused UIAlertAction *action) {
+            [self renameURL:url];
+        }] ?: NSNull.null,
+        [self nativeActionWithTitle:@"Delete All" asset:@"qtm_ic_delete_3x_Normal"
+                             symbol:@"trash.fill" handler:^(__unused UIAlertAction *action) {
+            [self confirmDeleteAll];
+        }] ?: NSNull.null
+    ];
+    SEL addAction = NSSelectorFromString(@"addAction:");
+    for (id action in actions) {
+        if (action != NSNull.null && [sheet respondsToSelector:addAction]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(sheet, addAction, action);
+        }
+    }
+    SEL presentFromView = NSSelectorFromString(@"presentFromView:animated:completion:");
+    SEL presentFromController = NSSelectorFromString(
+        @"presentFromViewController:animated:completion:"
+    );
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad &&
+        [sheet respondsToSelector:presentFromView]) {
+        ((void (*)(id, SEL, id, BOOL, id))objc_msgSend)(
+            sheet, presentFromView, sourceView, YES, nil
+        );
+        return YES;
+    }
+    if ([sheet respondsToSelector:presentFromController]) {
+        ((void (*)(id, SEL, id, BOOL, id))objc_msgSend)(
+            sheet, presentFromController, self, YES, nil
+        );
+        return YES;
+    }
+    return NO;
+}
+
+- (void)showItemMenuForURL:(NSURL *)url sourceView:(UIView *)sourceView {
+    if ([self showNativeMenuForURL:url sourceView:sourceView]) {
+        return;
+    }
+    UIAlertController *menu = [UIAlertController
+        alertControllerWithTitle:url.lastPathComponent.stringByDeletingPathExtension
+                         message:nil
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    [menu addAction:YTKACEMenuAction(@"Default Player", @"play", UIAlertActionStyleDefault,
+        ^(__unused UIAlertAction *action) {
+            [self playURLWithSystemPlayer:url];
+        })];
+    [menu addAction:YTKACEMenuAction(@"Video Info", @"info.circle", UIAlertActionStyleDefault,
+        ^(__unused UIAlertAction *action) {
+            [self showInfoForURL:url];
+        })];
+    [menu addAction:YTKACEMenuAction(@"Save to Photos", @"photo", UIAlertActionStyleDefault,
+        ^(__unused UIAlertAction *action) {
+            UISaveVideoAtPathToSavedPhotosAlbum(url.path, nil, nil, NULL);
+        })];
+    [menu addAction:YTKACEMenuAction(@"Save Artwork", @"photo.on.rectangle", UIAlertActionStyleDefault,
+        ^(__unused UIAlertAction *action) {
+            [self saveArtworkForURL:url];
+        })];
+    [menu addAction:YTKACEMenuAction(@"Share", @"square.and.arrow.up", UIAlertActionStyleDefault,
+        ^(__unused UIAlertAction *action) {
+            [self shareURL:url sourceView:sourceView];
+        })];
+    [menu addAction:YTKACEMenuAction(@"Delete", @"trash", UIAlertActionStyleDestructive,
+        ^(__unused UIAlertAction *action) {
+            [self deleteURL:url];
+        })];
+    [menu addAction:YTKACEMenuAction(@"Rename", @"pencil", UIAlertActionStyleDefault,
+        ^(__unused UIAlertAction *action) {
+            [self renameURL:url];
+        })];
+    [menu addAction:YTKACEMenuAction(@"Delete All", @"trash.fill", UIAlertActionStyleDestructive,
+        ^(__unused UIAlertAction *action) {
+            [self confirmDeleteAll];
+        })];
+    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel"
+        style:UIAlertActionStyleCancel handler:nil]];
+    if (menu.popoverPresentationController != nil) {
+        menu.popoverPresentationController.sourceView = sourceView;
+        menu.popoverPresentationController.sourceRect = sourceView.bounds;
+    }
+    [self presentViewController:menu animated:YES completion:nil];
+}
+
+- (void)showInfoForURL:(NSURL *)url {
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
+    NSNumber *size = nil;
+    NSDate *created = nil;
+    [url getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
+    [url getResourceValue:&created forKey:NSURLCreationDateKey error:nil];
+    NSTimeInterval duration = CMTimeGetSeconds(asset.duration);
+    AVAssetTrack *track = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
+    CGSize dimensions = track == nil ? CGSizeZero
+        : CGSizeApplyAffineTransform(track.naturalSize, track.preferredTransform);
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.dateStyle = NSDateFormatterMediumStyle;
+    formatter.timeStyle = NSDateFormatterMediumStyle;
+    NSString *fileSize = [NSByteCountFormatter
+        stringFromByteCount:size.longLongValue
+        countStyle:NSByteCountFormatterCountStyleFile];
+    NSMutableString *details = [NSMutableString string];
+    [details appendFormat:@"Format: %@\n", url.pathExtension.uppercaseString];
+    [details appendFormat:@"File Size: %@\n", fileSize];
+    [details appendFormat:@"Duration: %@\n", YTKACEDurationText(duration)];
+    if (track != nil) {
+        [details appendFormat:@"Dimensions: %.0f×%.0f\n",
+            fabs(dimensions.width), fabs(dimensions.height)];
+        [details appendFormat:@"Bitrate: %.2f Kbps\n",
+            track.estimatedDataRate / 1000.0];
+        [details appendFormat:@"Frame Rate: %.2f fps\n", track.nominalFrameRate];
+    }
+    if (created != nil) {
+        [details appendFormat:@"Created: %@", [formatter stringFromDate:created]];
+    }
+
+    if (!YTKACEShowYouTubeDialog(@"Video Info", details)) {
+        YTKACEShowNotice(@"Video information unavailable");
+    }
+}
+
+- (void)saveArtworkForURL:(NSURL *)url {
+    NSDictionary *metadata = [self.metadataCache objectForKey:url.path];
+    UIImage *image = [metadata[@"image"] isKindOfClass:UIImage.class]
+        ? metadata[@"image"] : nil;
+    if (image != nil) {
+        UIImageWriteToSavedPhotosAlbum(image, nil, nil, NULL);
+    }
+}
+
+- (void)shareURL:(NSURL *)url sourceView:(UIView *)sourceView {
+    UIActivityViewController *share =
+        [[UIActivityViewController alloc] initWithActivityItems:@[url]
+                                         applicationActivities:nil];
+    if (share.popoverPresentationController != nil) {
+        share.popoverPresentationController.sourceView = sourceView;
+        share.popoverPresentationController.sourceRect = sourceView.bounds;
+    }
+    [self presentViewController:share animated:YES completion:nil];
+}
+
+- (void)deleteURL:(NSURL *)url {
+    [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+    for (NSURL *sidecar in YTKACESidecarURLs(url)) {
+        [NSFileManager.defaultManager removeItemAtURL:sidecar error:nil];
+    }
+    [self.metadataCache removeObjectForKey:url.path];
+    [self reloadFiles];
+}
+
+- (void)renameURL:(NSURL *)url {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Rename"
+        message:nil preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text = url.lastPathComponent.stringByDeletingPathExtension;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+        style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Save"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            NSString *name = alert.textFields.firstObject.text;
+            if (name.length == 0) {
+                return;
+            }
+            NSURL *destination = [[url URLByDeletingLastPathComponent]
+                URLByAppendingPathComponent:[name stringByAppendingPathExtension:url.pathExtension]];
+            [NSFileManager.defaultManager moveItemAtURL:url toURL:destination error:nil];
+            NSArray<NSURL *> *oldSidecars = YTKACESidecarURLs(url);
+            NSArray<NSURL *> *newSidecars = YTKACESidecarURLs(destination);
+            for (NSUInteger index = 0; index < oldSidecars.count; index++) {
+                if ([NSFileManager.defaultManager fileExistsAtPath:oldSidecars[index].path]) {
+                    [NSFileManager.defaultManager moveItemAtURL:oldSidecars[index]
+                        toURL:newSidecars[index] error:nil];
+                }
+            }
+            [self.metadataCache removeObjectForKey:url.path];
+            [self reloadFiles];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)confirmDeleteAll {
+    __weak __typeof__(self) weakSelf = self;
+    BOOL shown = YTKACEShowYouTubeConfirmation(
+        @"Delete All",
+        @"Delete every item in this section?",
+        @"Delete All",
+        ^{
+            __typeof__(self) strongSelf = weakSelf;
+            if (strongSelf == nil) return;
+            for (NSURL *url in strongSelf.files) {
+                [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+                for (NSURL *sidecar in YTKACESidecarURLs(url)) {
+                    [NSFileManager.defaultManager removeItemAtURL:sidecar error:nil];
+                }
+            }
+            [strongSelf.metadataCache removeAllObjects];
+            [strongSelf reloadFiles];
+        }
+    );
+    if (!shown) {
+        YTKACEShowNotice(@"Delete confirmation unavailable");
+    }
+}
+
+@end

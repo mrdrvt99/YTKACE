@@ -1,0 +1,744 @@
+#import "YTKACEDownloadPlayerController.h"
+
+#import <AVFoundation/AVFoundation.h>
+#import <MediaPlayer/MediaPlayer.h>
+
+NSNotificationName const YTKACEDownloadPlaybackDidChangeNotification =
+    @"YTKACEDownloadPlaybackDidChangeNotification";
+NSNotificationName const YTKACEDownloadPlaybackDidStopNotification =
+    @"YTKACEDownloadPlaybackDidStopNotification";
+
+static NSString *YTKACEPlayerTimeText(NSTimeInterval duration) {
+    if (!isfinite(duration) || duration < 0.0) {
+        return @"0:00";
+    }
+    NSInteger seconds = (NSInteger)floor(duration);
+    NSInteger hours = seconds / 3600;
+    NSInteger minutes = (seconds % 3600) / 60;
+    NSInteger remainder = seconds % 60;
+    if (hours > 0) {
+        return [NSString stringWithFormat:@"%ld:%02ld:%02ld",
+            (long)hours, (long)minutes, (long)remainder];
+    }
+    return [NSString stringWithFormat:@"%ld:%02ld",
+        (long)minutes, (long)remainder];
+}
+
+@interface YTKACEDownloadPlaybackSession ()
+@property(nonatomic, strong, readwrite) AVPlayer *player;
+@property(nonatomic, copy, readwrite, nullable) NSURL *currentURL;
+@property(nonatomic, copy, readwrite) NSArray<NSURL *> *playlist;
+@property(nonatomic, assign, readwrite) NSInteger currentIndex;
+@end
+
+@implementation YTKACEDownloadPlaybackSession
+
++ (instancetype)sharedSession {
+    static YTKACEDownloadPlaybackSession *session;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        session = [YTKACEDownloadPlaybackSession new];
+    });
+    return session;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self == nil) {
+        return nil;
+    }
+    self.player = [AVPlayer new];
+    self.playlist = @[];
+    self.currentIndex = NSNotFound;
+    self.autoplayEnabled = YES;
+    self.gesturesEnabled = NO;
+    self.repeatEnabled = NO;
+    self.playbackRate = 1.0f;
+    [NSNotificationCenter.defaultCenter addObserver:self
+        selector:@selector(itemDidEnd:)
+        name:AVPlayerItemDidPlayToEndTimeNotification object:nil];
+    return self;
+}
+
+- (void)dealloc {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)loadURL:(NSURL *)URL
+       playlist:(NSArray<NSURL *> *)playlist
+          index:(NSInteger)index {
+    self.playlist = playlist ?: @[];
+    self.currentIndex = index;
+    if (URL == nil) {
+        return;
+    }
+    if (![self.currentURL isEqual:URL]) {
+        self.currentURL = URL;
+        [self.player replaceCurrentItemWithPlayerItem:
+            [AVPlayerItem playerItemWithURL:URL]];
+    }
+    [self play];
+    [self notifyChange];
+}
+
+- (void)updatePlaylist:(NSArray<NSURL *> *)playlist {
+    self.playlist = playlist ?: @[];
+    NSUInteger index = self.currentURL == nil
+        ? NSNotFound : [self.playlist indexOfObject:self.currentURL];
+    self.currentIndex = index == NSNotFound ? NSNotFound : (NSInteger)index;
+    [self notifyChange];
+}
+
+- (void)play {
+    [self.player play];
+    self.player.rate = MAX(0.25f, MIN(self.playbackRate, 5.0f));
+    [self notifyChange];
+}
+
+- (void)pause {
+    [self.player pause];
+    [self notifyChange];
+}
+
+- (void)togglePlayback {
+    self.player.rate == 0.0f ? [self play] : [self pause];
+}
+
+- (void)setPlaybackRate:(float)playbackRate {
+    _playbackRate = MAX(0.25f, MIN(playbackRate, 5.0f));
+    if (self.player.rate != 0.0f) {
+        self.player.rate = _playbackRate;
+    }
+    [self notifyChange];
+}
+
+- (void)seekBy:(NSTimeInterval)seconds {
+    NSTimeInterval current = CMTimeGetSeconds(self.player.currentTime);
+    NSTimeInterval duration = CMTimeGetSeconds(self.player.currentItem.duration);
+    if (!isfinite(current)) {
+        current = 0.0;
+    }
+    NSTimeInterval target = MAX(0.0, current + seconds);
+    if (isfinite(duration) && duration > 0.0) {
+        target = MIN(target, duration);
+    }
+    [self.player seekToTime:CMTimeMakeWithSeconds(target, 600)
+            toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+}
+
+- (void)playNext {
+    if (self.playlist.count == 0 || self.currentIndex == NSNotFound) {
+        return;
+    }
+    NSInteger next = self.currentIndex + 1;
+    if (next >= (NSInteger)self.playlist.count) {
+        next = self.autoplayEnabled ? 0 : NSNotFound;
+    }
+    if (next != NSNotFound) {
+        [self loadURL:self.playlist[(NSUInteger)next]
+             playlist:self.playlist index:next];
+    }
+}
+
+- (void)playPrevious {
+    NSTimeInterval current = CMTimeGetSeconds(self.player.currentTime);
+    if (isfinite(current) && current > 5.0) {
+        [self.player seekToTime:kCMTimeZero];
+        return;
+    }
+    if (self.playlist.count == 0 || self.currentIndex == NSNotFound) {
+        return;
+    }
+    NSInteger previous = self.currentIndex - 1;
+    if (previous < 0) {
+        previous = self.autoplayEnabled ? (NSInteger)self.playlist.count - 1 : NSNotFound;
+    }
+    if (previous != NSNotFound) {
+        [self loadURL:self.playlist[(NSUInteger)previous]
+             playlist:self.playlist index:previous];
+    }
+}
+
+- (void)stop {
+    [self.player pause];
+    [self.player replaceCurrentItemWithPlayerItem:nil];
+    self.currentURL = nil;
+    self.playlist = @[];
+    self.currentIndex = NSNotFound;
+    [NSNotificationCenter.defaultCenter
+        postNotificationName:YTKACEDownloadPlaybackDidStopNotification object:self];
+}
+
+- (void)itemDidEnd:(NSNotification *)notification {
+    if (notification.object != self.player.currentItem) {
+        return;
+    }
+    if (self.repeatEnabled) {
+        [self.player seekToTime:kCMTimeZero completionHandler:^(__unused BOOL finished) {
+            [self play];
+        }];
+    } else if (self.autoplayEnabled) {
+        [self playNext];
+    } else {
+        [self pause];
+    }
+}
+
+- (void)notifyChange {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSNotificationCenter.defaultCenter
+            postNotificationName:YTKACEDownloadPlaybackDidChangeNotification object:self];
+    });
+}
+
+@end
+
+@interface YTKACEPlayerSurface : UIView
+@property(nonatomic, strong) AVPlayer *player;
+@end
+
+@implementation YTKACEPlayerSurface
++ (Class)layerClass { return AVPlayerLayer.class; }
+- (AVPlayerLayer *)playerLayer { return (AVPlayerLayer *)self.layer; }
+- (void)setPlayer:(AVPlayer *)player {
+    _player = player;
+    self.playerLayer.player = player;
+    self.playerLayer.videoGravity = AVLayerVideoGravityResizeAspect;
+}
+@end
+
+@interface YTKACEDownloadPlayerController () <UIGestureRecognizerDelegate>
+@property(nonatomic, strong) YTKACEDownloadPlaybackSession *session;
+@property(nonatomic, strong) YTKACEPlayerSurface *playerSurface;
+@property(nonatomic, strong) UIView *controlsView;
+@property(nonatomic, strong) UIButton *playButton;
+@property(nonatomic, strong) UIButton *repeatButton;
+@property(nonatomic, strong) UILabel *titleLabel;
+@property(nonatomic, strong) UILabel *elapsedLabel;
+@property(nonatomic, strong) UILabel *durationLabel;
+@property(nonatomic, strong) UISlider *slider;
+@property(nonatomic, strong) UIView *optionsView;
+@property(nonatomic, strong) UIView *optionsCard;
+@property(nonatomic, strong) UILabel *speedDetail;
+@property(nonatomic, strong) UILabel *sleepDetail;
+@property(nonatomic, strong) UILabel *gesturesDetail;
+@property(nonatomic, strong) UILabel *autoplayDetail;
+@property(nonatomic, strong) NSTimer *hideTimer;
+@property(nonatomic, strong) NSTimer *sleepTimer;
+@property(nonatomic, strong) id timeObserver;
+@property(nonatomic, assign) BOOL scrubbing;
+@property(nonatomic, assign) BOOL aspectFill;
+@property(nonatomic, assign) CGPoint panStart;
+@end
+
+@implementation YTKACEDownloadPlayerController
+
+- (instancetype)initWithSession:(YTKACEDownloadPlaybackSession *)session {
+    self = [super initWithNibName:nil bundle:nil];
+    if (self != nil) {
+        self.session = session;
+        self.modalPresentationStyle = UIModalPresentationFullScreen;
+    }
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = UIColor.blackColor;
+    [self buildPlayer];
+    [self buildOptions];
+    [self observePlayback];
+    [self refreshControls];
+    [self scheduleControlsHide];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self.session play];
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    [self.hideTimer invalidate];
+}
+
+- (void)dealloc {
+    [self.hideTimer invalidate];
+    [self.sleepTimer invalidate];
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+    if (self.timeObserver != nil) {
+        [self.session.player removeTimeObserver:self.timeObserver];
+    }
+}
+
+- (BOOL)prefersStatusBarHidden { return YES; }
+- (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
+
+- (UIButton *)buttonWithSymbol:(NSString *)symbol
+                          size:(CGFloat)size
+                        action:(SEL)action {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIImageSymbolConfiguration *configuration =
+        [UIImageSymbolConfiguration configurationWithPointSize:size
+                                                        weight:UIImageSymbolWeightSemibold];
+    [button setImage:[UIImage systemImageNamed:symbol withConfiguration:configuration]
+             forState:UIControlStateNormal];
+    button.tintColor = UIColor.whiteColor;
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
+
+- (void)buildPlayer {
+    self.playerSurface = [YTKACEPlayerSurface new];
+    self.playerSurface.player = self.session.player;
+    self.playerSurface.userInteractionEnabled = YES;
+    self.playerSurface.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.playerSurface];
+    UITapGestureRecognizer *surfaceTap = [[UITapGestureRecognizer alloc]
+        initWithTarget:self action:@selector(toggleControls)];
+    [self.playerSurface addGestureRecognizer:surfaceTap];
+
+    self.controlsView = [UIView new];
+    self.controlsView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.18];
+    self.controlsView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.controlsView];
+
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
+        initWithTarget:self action:@selector(toggleControls)];
+    [self.controlsView addGestureRecognizer:tap];
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
+        initWithTarget:self action:@selector(handlePan:)];
+    [self.controlsView addGestureRecognizer:pan];
+
+    UIButton *minimize = [self buttonWithSymbol:@"chevron.down" size:21.0
+                                          action:@selector(minimizePlayer)];
+    UIButton *more = [self buttonWithSymbol:@"ellipsis" size:24.0
+                                      action:@selector(showOptions)];
+    self.titleLabel = [UILabel new];
+    self.titleLabel.textColor = UIColor.whiteColor;
+    self.titleLabel.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightSemibold];
+    self.titleLabel.numberOfLines = 2;
+    self.titleLabel.textAlignment = NSTextAlignmentCenter;
+    UIStackView *top = [[UIStackView alloc] initWithArrangedSubviews:@[
+        minimize, self.titleLabel, more
+    ]];
+    top.axis = UILayoutConstraintAxisHorizontal;
+    top.alignment = UIStackViewAlignmentCenter;
+    top.spacing = 14.0;
+    top.translatesAutoresizingMaskIntoConstraints = NO;
+    [minimize.widthAnchor constraintEqualToConstant:44.0].active = YES;
+    [more.widthAnchor constraintEqualToConstant:44.0].active = YES;
+    [self.controlsView addSubview:top];
+
+    UIButton *back = [self buttonWithSymbol:@"gobackward.10" size:27.0
+                                      action:@selector(skipBack)];
+    UIButton *previous = [self buttonWithSymbol:@"backward.end.fill" size:25.0
+                                          action:@selector(previousItem)];
+    self.playButton = [self buttonWithSymbol:@"pause.fill" size:40.0
+                                      action:@selector(togglePlayback)];
+    UIButton *next = [self buttonWithSymbol:@"forward.end.fill" size:25.0
+                                      action:@selector(nextItem)];
+    UIButton *forward = [self buttonWithSymbol:@"goforward.10" size:27.0
+                                         action:@selector(skipForward)];
+    UIStackView *center = [[UIStackView alloc] initWithArrangedSubviews:@[
+        back, previous, self.playButton, next, forward
+    ]];
+    center.axis = UILayoutConstraintAxisHorizontal;
+    center.alignment = UIStackViewAlignmentCenter;
+    center.distribution = UIStackViewDistributionEqualSpacing;
+    center.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.playButton.widthAnchor constraintEqualToConstant:78.0].active = YES;
+    [self.playButton.heightAnchor constraintEqualToConstant:78.0].active = YES;
+    [self.controlsView addSubview:center];
+
+    self.elapsedLabel = [self timeLabel];
+    self.durationLabel = [self timeLabel];
+    self.durationLabel.textAlignment = NSTextAlignmentRight;
+    self.slider = [UISlider new];
+    self.slider.minimumTrackTintColor = UIColor.whiteColor;
+    self.slider.maximumTrackTintColor = [UIColor colorWithWhite:0.7 alpha:0.75];
+    self.slider.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.slider addTarget:self action:@selector(sliderStarted)
+          forControlEvents:UIControlEventTouchDown];
+    [self.slider addTarget:self action:@selector(sliderChanged)
+          forControlEvents:UIControlEventValueChanged];
+    [self.slider addTarget:self action:@selector(sliderEnded)
+          forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside |
+                           UIControlEventTouchCancel];
+    UIButton *aspect = [self buttonWithSymbol:@"arrow.up.left.and.arrow.down.right" size:22.0
+                                        action:@selector(toggleAspect)];
+    self.repeatButton = [self buttonWithSymbol:@"repeat" size:24.0
+                                        action:@selector(toggleRepeat)];
+    UIStackView *bottomButtons = [[UIStackView alloc] initWithArrangedSubviews:@[
+        aspect, [UIView new], self.repeatButton
+    ]];
+    bottomButtons.axis = UILayoutConstraintAxisHorizontal;
+    bottomButtons.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.controlsView addSubview:self.slider];
+    [self.controlsView addSubview:self.elapsedLabel];
+    [self.controlsView addSubview:self.durationLabel];
+    [self.controlsView addSubview:bottomButtons];
+
+    UILayoutGuide *safe = self.controlsView.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [self.playerSurface.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.playerSurface.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.playerSurface.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.playerSurface.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.controlsView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.controlsView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.controlsView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.controlsView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [top.topAnchor constraintEqualToAnchor:safe.topAnchor constant:12.0],
+        [top.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:14.0],
+        [top.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-14.0],
+        [center.centerXAnchor constraintEqualToAnchor:self.controlsView.centerXAnchor],
+        [center.centerYAnchor constraintEqualToAnchor:self.controlsView.centerYAnchor],
+        [center.widthAnchor constraintLessThanOrEqualToConstant:540.0],
+        [center.widthAnchor constraintEqualToAnchor:self.controlsView.widthAnchor multiplier:0.55],
+        [self.slider.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:28.0],
+        [self.slider.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-28.0],
+        [self.slider.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-70.0],
+        [self.elapsedLabel.leadingAnchor constraintEqualToAnchor:self.slider.leadingAnchor],
+        [self.elapsedLabel.bottomAnchor constraintEqualToAnchor:self.slider.topAnchor constant:-4.0],
+        [self.durationLabel.trailingAnchor constraintEqualToAnchor:self.slider.trailingAnchor],
+        [self.durationLabel.bottomAnchor constraintEqualToAnchor:self.slider.topAnchor constant:-4.0],
+        [bottomButtons.leadingAnchor constraintEqualToAnchor:self.slider.leadingAnchor],
+        [bottomButtons.trailingAnchor constraintEqualToAnchor:self.slider.trailingAnchor],
+        [bottomButtons.topAnchor constraintEqualToAnchor:self.slider.bottomAnchor constant:13.0],
+        [bottomButtons.heightAnchor constraintEqualToConstant:38.0]
+    ]];
+}
+
+- (UILabel *)timeLabel {
+    UILabel *label = [UILabel new];
+    label.textColor = UIColor.whiteColor;
+    label.font = [UIFont monospacedDigitSystemFontOfSize:13.0 weight:UIFontWeightRegular];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    return label;
+}
+
+- (void)buildOptions {
+    self.optionsView = [UIView new];
+    self.optionsView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.55];
+    self.optionsView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.optionsView.hidden = YES;
+    [self.view addSubview:self.optionsView];
+    UITapGestureRecognizer *dismiss = [[UITapGestureRecognizer alloc]
+        initWithTarget:self action:@selector(hideOptions)];
+    dismiss.delegate = self;
+    dismiss.cancelsTouchesInView = NO;
+    [self.optionsView addGestureRecognizer:dismiss];
+
+    UIView *card = [UIView new];
+    card.backgroundColor = [UIColor colorWithWhite:0.035 alpha:0.98];
+    card.layer.cornerRadius = 22.0;
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    self.optionsCard = card;
+    [self.optionsView addSubview:card];
+
+    UIStackView *rows = [UIStackView new];
+    rows.axis = UILayoutConstraintAxisVertical;
+    rows.distribution = UIStackViewDistributionFillEqually;
+    rows.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:rows];
+    [rows addArrangedSubview:[self optionRow:@"gauge.with.dots.needle.67percent"
+        title:@"Playback Speed" selector:@selector(selectSpeed) detail:&_speedDetail]];
+    [rows addArrangedSubview:[self optionRow:@"moon.zzz.fill"
+        title:@"Sleep Timer" selector:@selector(selectSleepTimer) detail:&_sleepDetail]];
+    [rows addArrangedSubview:[self optionRow:@"hand.draw"
+        title:@"Gestures" selector:@selector(toggleGestures) detail:&_gesturesDetail]];
+    [rows addArrangedSubview:[self optionRow:@"forward.end.fill"
+        title:@"AutoPlay" selector:@selector(toggleAutoplay) detail:&_autoplayDetail]];
+    [rows addArrangedSubview:[self optionRow:@"text.line.first.and.arrowtriangle.forward"
+        title:@"Play Next" selector:@selector(nextItem) detail:NULL]];
+    [rows addArrangedSubview:[self optionRow:@"xmark"
+        title:@"Close" selector:@selector(hideOptions) detail:NULL]];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.optionsView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.optionsView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.optionsView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.optionsView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [card.centerXAnchor constraintEqualToAnchor:self.optionsView.centerXAnchor],
+        [card.centerYAnchor constraintEqualToAnchor:self.optionsView.centerYAnchor],
+        [card.widthAnchor constraintLessThanOrEqualToConstant:520.0],
+        [card.widthAnchor constraintEqualToAnchor:self.optionsView.widthAnchor multiplier:0.62],
+        [card.heightAnchor constraintEqualToConstant:390.0],
+        [rows.topAnchor constraintEqualToAnchor:card.topAnchor constant:18.0],
+        [rows.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16.0],
+        [rows.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16.0],
+        [rows.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-18.0]
+    ]];
+}
+
+- (UIView *)optionRow:(NSString *)symbol
+                title:(NSString *)title
+             selector:(SEL)selector
+               detail:(UILabel * __strong *)detailOutput {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.tintColor = UIColor.whiteColor;
+    [button addTarget:self action:selector forControlEvents:UIControlEventTouchUpInside];
+    UIImageView *icon = [[UIImageView alloc] initWithImage:
+        [[UIImage systemImageNamed:symbol] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]];
+    icon.tintColor = UIColor.whiteColor;
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    UILabel *name = [UILabel new];
+    name.text = title;
+    name.textColor = UIColor.whiteColor;
+    name.font = [UIFont systemFontOfSize:20.0 weight:UIFontWeightRegular];
+    UILabel *detail = [UILabel new];
+    detail.textColor = [UIColor colorWithWhite:0.68 alpha:1.0];
+    detail.font = [UIFont systemFontOfSize:19.0];
+    if (detailOutput != NULL) {
+        *detailOutput = detail;
+    }
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[
+        icon, name, detail, [UIView new]
+    ]];
+    stack.userInteractionEnabled = NO;
+    stack.axis = UILayoutConstraintAxisHorizontal;
+    stack.spacing = 16.0;
+    stack.alignment = UIStackViewAlignmentCenter;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [icon.widthAnchor constraintEqualToConstant:42.0].active = YES;
+    [button addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.topAnchor constraintEqualToAnchor:button.topAnchor],
+        [stack.leadingAnchor constraintEqualToAnchor:button.leadingAnchor constant:8.0],
+        [stack.trailingAnchor constraintEqualToAnchor:button.trailingAnchor constant:-8.0],
+        [stack.bottomAnchor constraintEqualToAnchor:button.bottomAnchor]
+    ]];
+    return button;
+}
+
+- (void)observePlayback {
+    __weak YTKACEDownloadPlayerController *weakSelf = self;
+    self.timeObserver = [self.session.player addPeriodicTimeObserverForInterval:
+        CMTimeMakeWithSeconds(0.25, 600) queue:dispatch_get_main_queue()
+        usingBlock:^(__unused CMTime time) {
+            [weakSelf refreshControls];
+        }];
+    [NSNotificationCenter.defaultCenter addObserver:self
+        selector:@selector(playbackChanged:)
+        name:YTKACEDownloadPlaybackDidChangeNotification object:self.session];
+}
+
+- (void)playbackChanged:(NSNotification *)notification {
+    (void)notification;
+    [self refreshControls];
+}
+
+- (void)refreshControls {
+    self.titleLabel.text = self.session.currentURL.lastPathComponent.stringByDeletingPathExtension;
+    NSTimeInterval elapsed = CMTimeGetSeconds(self.session.player.currentTime);
+    NSTimeInterval duration = CMTimeGetSeconds(self.session.player.currentItem.duration);
+    if (!self.scrubbing) {
+        self.slider.minimumValue = 0.0f;
+        self.slider.maximumValue = isfinite(duration) && duration > 0.0
+            ? (float)duration : 1.0f;
+        self.slider.value = isfinite(elapsed) ? (float)elapsed : 0.0f;
+    }
+    self.elapsedLabel.text = YTKACEPlayerTimeText(elapsed);
+    self.durationLabel.text = YTKACEPlayerTimeText(duration);
+    NSString *playSymbol = self.session.player.rate == 0.0f ? @"play.fill" : @"pause.fill";
+    [self.playButton setImage:[UIImage systemImageNamed:playSymbol] forState:UIControlStateNormal];
+    self.repeatButton.tintColor = self.session.repeatEnabled
+        ? UIColor.systemRedColor : UIColor.whiteColor;
+    self.speedDetail.text = [NSString stringWithFormat:@"· %.2gx", self.session.playbackRate];
+    self.sleepDetail.text = self.sleepTimer.isValid ? @"· On" : @"· Off";
+    self.gesturesDetail.text = self.session.gesturesEnabled ? @"· On" : @"· Off";
+    self.autoplayDetail.text = self.session.autoplayEnabled ? @"· On" : @"· Off";
+}
+
+- (void)togglePlayback { [self.session togglePlayback]; [self scheduleControlsHide]; }
+- (void)skipBack { [self.session seekBy:-10.0]; [self scheduleControlsHide]; }
+- (void)skipForward { [self.session seekBy:10.0]; [self scheduleControlsHide]; }
+- (void)previousItem { [self.session playPrevious]; [self scheduleControlsHide]; }
+- (void)nextItem { [self.session playNext]; [self hideOptions]; [self scheduleControlsHide]; }
+
+- (void)toggleRepeat {
+    self.session.repeatEnabled = !self.session.repeatEnabled;
+    [self refreshControls];
+    [self scheduleControlsHide];
+}
+
+- (void)toggleAspect {
+    self.aspectFill = !self.aspectFill;
+    self.playerSurface.playerLayer.videoGravity = self.aspectFill
+        ? AVLayerVideoGravityResizeAspectFill : AVLayerVideoGravityResizeAspect;
+    [self scheduleControlsHide];
+}
+
+- (void)sliderStarted { self.scrubbing = YES; [self.hideTimer invalidate]; }
+- (void)sliderChanged { self.elapsedLabel.text = YTKACEPlayerTimeText(self.slider.value); }
+- (void)sliderEnded {
+    self.scrubbing = NO;
+    [self.session.player seekToTime:CMTimeMakeWithSeconds(self.slider.value, 600)
+        toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+    [self scheduleControlsHide];
+}
+
+- (void)toggleControls {
+    if (!self.optionsView.hidden) {
+        return;
+    }
+    BOOL show = self.controlsView.alpha < 0.5;
+    [UIView animateWithDuration:0.18 animations:^{
+        self.controlsView.alpha = show ? 1.0 : 0.0;
+    }];
+    show ? [self scheduleControlsHide] : [self.hideTimer invalidate];
+}
+
+- (void)scheduleControlsHide {
+    [self.hideTimer invalidate];
+    if (self.session.player.rate == 0.0f || !self.optionsView.hidden) {
+        return;
+    }
+    self.hideTimer = [NSTimer scheduledTimerWithTimeInterval:3.0
+        target:self selector:@selector(hideControls)
+        userInfo:nil repeats:NO];
+}
+
+- (void)hideControls {
+    [UIView animateWithDuration:0.25 animations:^{
+        self.controlsView.alpha = 0.0;
+    }];
+}
+
+- (void)showOptions {
+    [self.hideTimer invalidate];
+    [self refreshControls];
+    self.optionsView.hidden = NO;
+    self.optionsView.alpha = 0.0;
+    [UIView animateWithDuration:0.2 animations:^{ self.optionsView.alpha = 1.0; }];
+}
+
+- (void)hideOptions {
+    [UIView animateWithDuration:0.18 animations:^{ self.optionsView.alpha = 0.0; }
+        completion:^(__unused BOOL finished) {
+            self.optionsView.hidden = YES;
+            [self scheduleControlsHide];
+        }];
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+       shouldReceiveTouch:(UITouch *)touch {
+    if (gestureRecognizer.view == self.optionsView &&
+        [touch.view isDescendantOfView:self.optionsCard]) {
+        return NO;
+    }
+    return YES;
+}
+
+- (void)selectSpeed {
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Playback Speed"
+        message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray<NSNumber *> *speeds = @[@0.25, @0.5, @0.75, @1.0, @1.25, @1.5, @1.75,
+                                    @2.0, @2.5, @3.0, @4.0, @5.0];
+    for (NSNumber *speed in speeds) {
+        NSString *title = [NSString stringWithFormat:@"%.2gx", speed.floatValue];
+        [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                self.session.playbackRate = speed.floatValue;
+                [self refreshControls];
+            }]];
+    }
+    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    menu.popoverPresentationController.sourceView = self.optionsView;
+    menu.popoverPresentationController.sourceRect = CGRectMake(
+        CGRectGetMidX(self.optionsView.bounds), CGRectGetMidY(self.optionsView.bounds), 1.0, 1.0);
+    [self presentViewController:menu animated:YES completion:nil];
+}
+
+- (void)selectSleepTimer {
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Sleep Timer"
+        message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray<NSNumber *> *minutes = @[@0, @15, @30, @45, @60];
+    for (NSNumber *minute in minutes) {
+        NSString *title = minute.integerValue == 0
+            ? @"Off" : [NSString stringWithFormat:@"%@ Minutes", minute];
+        [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                [self.sleepTimer invalidate];
+                self.sleepTimer = nil;
+                if (minute.integerValue > 0) {
+                    self.sleepTimer = [NSTimer scheduledTimerWithTimeInterval:
+                        minute.doubleValue * 60.0 target:self
+                        selector:@selector(sleepTimerFired) userInfo:nil repeats:NO];
+                }
+                [self refreshControls];
+            }]];
+    }
+    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    menu.popoverPresentationController.sourceView = self.optionsView;
+    menu.popoverPresentationController.sourceRect = CGRectMake(
+        CGRectGetMidX(self.optionsView.bounds), CGRectGetMidY(self.optionsView.bounds), 1.0, 1.0);
+    [self presentViewController:menu animated:YES completion:nil];
+}
+
+- (void)sleepTimerFired {
+    [self.session pause];
+    self.sleepTimer = nil;
+    [self refreshControls];
+}
+
+- (void)toggleGestures {
+    self.session.gesturesEnabled = !self.session.gesturesEnabled;
+    [self refreshControls];
+}
+
+- (void)toggleAutoplay {
+    self.session.autoplayEnabled = !self.session.autoplayEnabled;
+    [self refreshControls];
+}
+
+- (void)handlePan:(UIPanGestureRecognizer *)gesture {
+    if (!self.session.gesturesEnabled || !self.optionsView.hidden) {
+        return;
+    }
+    CGPoint translation = [gesture translationInView:self.controlsView];
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        self.panStart = translation;
+        [self.hideTimer invalidate];
+        return;
+    }
+    if (gesture.state == UIGestureRecognizerStateChanged) {
+        CGFloat dx = translation.x - self.panStart.x;
+        CGFloat dy = translation.y - self.panStart.y;
+        if (fabs(dx) > fabs(dy) && fabs(dx) > 24.0) {
+            [self.session seekBy:dx / 18.0];
+            self.panStart = translation;
+        } else if (fabs(dy) > 18.0) {
+            CGFloat change = -dy / MAX(180.0, CGRectGetHeight(self.view.bounds));
+            CGPoint location = [gesture locationInView:self.view];
+            if (location.x < CGRectGetMidX(self.view.bounds)) {
+                UIScreen.mainScreen.brightness = MAX(0.0,
+                    MIN(1.0, UIScreen.mainScreen.brightness + change));
+            } else {
+                MPVolumeView *volumeView = [MPVolumeView new];
+                UISlider *volumeSlider = nil;
+                for (UIView *view in volumeView.subviews) {
+                    if ([view isKindOfClass:UISlider.class]) {
+                        volumeSlider = (UISlider *)view;
+                        break;
+                    }
+                }
+                [volumeSlider setValue:MAX(0.0, MIN(1.0, volumeSlider.value + change)) animated:NO];
+                [volumeSlider sendActionsForControlEvents:UIControlEventValueChanged];
+            }
+            self.panStart = translation;
+        }
+    }
+    if (gesture.state == UIGestureRecognizerStateEnded ||
+        gesture.state == UIGestureRecognizerStateCancelled) {
+        [self scheduleControlsHide];
+    }
+}
+
+- (void)minimizePlayer {
+    dispatch_block_t handler = self.minimizeHandler;
+    self.playerSurface.player = nil;
+    [self dismissViewControllerAnimated:YES completion:handler];
+}
+
+@end
