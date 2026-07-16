@@ -9,7 +9,6 @@ A free and open-source YouTube enhancer for iOS with downloads, SponsorBlock, pl
 - [Compatibility](#compatibility)
 - [Installation](#installation)
 - [Build with GitHub Actions](#build-with-github-actions)
-- [Build Locally](#build-locally)
 - [FAQ](#faq)
 - [License](#license)
 
@@ -56,34 +55,24 @@ Download the latest build from [Releases](https://github.com/Epic0001/YTKACE/rel
 
 ## Build with GitHub Actions
 
-1. Fork this repository.
-2. Open the **Actions** tab in your fork.
-3. Select **IPA** and press **Run workflow**.
-4. Paste a direct download link to your decrypted YouTube IPA.
-5. Start the workflow.
-6. Download **YTKACE-IPA** from the finished run.
+> [!NOTE]
+> If this is your first time, fork this repository and enable Actions in your fork.
+
+<details>
+  <summary>How to build the YTKACE app</summary>
+  <ol>
+    <li>Open the <strong>Actions</strong> tab in your fork.</li>
+    <li>Select <strong>IPA</strong>.</li>
+    <li>Press <strong>Run workflow</strong>.</li>
+    <li>Paste a direct download link to your decrypted YouTube IPA.</li>
+    <li>Start the workflow and wait for it to finish.</li>
+    <li>Download <strong>YTKACE-IPA</strong> from the finished run.</li>
+  </ol>
+</details>
 
 The URL must point directly to the IPA file, not a download page.
 
 To build only the tweak package, run the **Deb** workflow. It produces the `.deb` as a workflow artifact.
-
-## Build Locally
-
-Install [Theos](https://theos.dev/docs/installation), then run:
-
-```sh
-make package FINALPACKAGE=1
-```
-
-The build produces `dist/YTKACE.dylib` and a package in `packages/`.
-
-To inject the dylib into your own decrypted YouTube IPA:
-
-```sh
-bash Scripts/sideload-repack.sh YouTube.ipa dist/YTKACE.dylib YTKACE_YouTube.ipa
-```
-
-The repack script requires Python 3, `ldid`, `zip`, and `unzip`. It works on macOS and Linux, including WSL.
 
 ## FAQ
 
