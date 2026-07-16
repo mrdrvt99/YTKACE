@@ -25,7 +25,7 @@ def make_overlay(bezel):
     overlay = bezel.copy()
     red, green, blue, alpha = bezel.split()
     white = ImageChops.darker(ImageChops.darker(red, green), blue)
-    white = white.point(lambda value: 255 if value >= 128 else 0)
+    white = white.point(lambda value: 255 if value >= 250 else 0)
 
     interior = Image.new("L", bezel.size, 0)
     ImageDraw.Draw(interior).rectangle((175, 165, 1425, 2835), fill=255)
