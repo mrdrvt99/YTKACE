@@ -23,6 +23,7 @@ static void YTKACEInstallModules(void) {
     YTKACEInstallPiPHooks();
     YTKACEInstallDownloadHooks();
     YTKACEInstallDoubleTapHooks();
+    YTKACEInstallFixPlaybackHooks();
     YTKACEInstallStreamingHooks();
     YTKACEInstallShortsHooks();
     YTKACEInstallTabBarHooks();

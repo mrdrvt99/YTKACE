@@ -31,6 +31,7 @@ YTKACE_FILES = \
 	Tweak/Features/Playback/SpeedControls.mm \
 	Tweak/Features/Playback/LoopControls.mm \
 	Tweak/Features/Playback/DoubleTapHooks.mm \
+	Tweak/Features/Playback/FixPlaybackHooks.mm \
 	Tweak/Features/Streaming/StreamingHooks.mm \
 	Tweak/Features/Shorts/ShortsHooks.mm \
 	Tweak/Features/Compatibility/SideloadCompatibility.mm \

@@ -14,6 +14,7 @@ void YTKACEInstallPiPHooks(void);
 void YTKACEInstallSpeedHooks(void);
 void YTKACEInstallLoopHooks(void);
 void YTKACEInstallDoubleTapHooks(void);
+void YTKACEInstallFixPlaybackHooks(void);
 void YTKACEInstallStreamingHooks(void);
 void YTKACEInstallShortsHooks(void);
 void YTKACEInstallSideloadCompatibilityHooks(void);
