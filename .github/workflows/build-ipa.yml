@@ -51,11 +51,11 @@ jobs:
 
       - name: Inject
         run: |
-          mkdir tweak
-          dpkg-deb -x packages/*.deb tweak
+          mkdir deb-root
+          dpkg-deb -x packages/*.deb deb-root
           export LDID="$(brew --prefix)/bin/ldid"
-          bash Scripts/sideload-repack.sh YouTube.ipa tweak/Applications/YouTube.app/Frameworks/YTKACE.dylib YTKACE_YouTube.ipa
-          bash Tools/verify-artifacts.sh tweak/Applications/YouTube.app/Frameworks/YTKACE.dylib YTKACE_YouTube.ipa
+          bash Scripts/sideload-repack.sh YouTube.ipa deb-root/Applications/YouTube.app/Frameworks/YTKACE.dylib YTKACE_YouTube.ipa
+          bash Tools/verify-artifacts.sh deb-root/Applications/YouTube.app/Frameworks/YTKACE.dylib YTKACE_YouTube.ipa
 
       - uses: actions/upload-artifact@v7
         with:
