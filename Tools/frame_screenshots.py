@@ -1,4 +1,3 @@
-import sys
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw
@@ -8,8 +7,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "screenshots"
 OUTPUT = SOURCE / "framed"
 BEZEL = SOURCE / "iphone-bezel.png"
-FRAME_OPENING = (197, 189, 1403, 2811)
-DISPLAY = (220, 220, 1380, 2780)
 NAMES = (
     "settings.png",
     "shorts-download-menu.png",
@@ -24,19 +21,17 @@ NAMES = (
 )
 
 
-def rounded_mask(size, radius):
-    mask = Image.new("L", size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), radius, fill=255)
-    return mask
+def make_overlay(bezel):
+    overlay = bezel.copy()
+    red, green, blue, alpha = bezel.split()
+    white = ImageChops.darker(ImageChops.darker(red, green), blue)
+    white = white.point(lambda value: 255 if value >= 128 else 0)
 
-
-def extract_bezel(path):
-    bezel = Image.open(path).convert("RGBA")
-    alpha = bezel.getchannel("A")
-    hole = Image.new("L", bezel.size, 0)
-    ImageDraw.Draw(hole).rounded_rectangle(FRAME_OPENING, 145, fill=255)
-    bezel.putalpha(ImageChops.subtract(alpha, hole))
-    bezel.save(BEZEL, optimize=True)
+    interior = Image.new("L", bezel.size, 0)
+    ImageDraw.Draw(interior).rectangle((175, 165, 1425, 2835), fill=255)
+    opening = ImageChops.multiply(white, interior)
+    overlay.putalpha(ImageChops.subtract(alpha, opening))
+    return overlay, opening
 
 
 def cover(image, size):
@@ -50,21 +45,19 @@ def cover(image, size):
     return resized.crop((left, top, left + size[0], top + size[1]))
 
 
-def frame(path, bezel):
-    screen_size = (DISPLAY[2] - DISPLAY[0], DISPLAY[3] - DISPLAY[1])
+def frame(path, overlay, opening):
+    display = opening.getbbox()
+    screen_size = (display[2] - display[0], display[3] - display[1])
     screen = cover(Image.open(path).convert("RGBA"), screen_size)
-    canvas = Image.new("RGBA", bezel.size, (0, 0, 0, 0))
-    ImageDraw.Draw(canvas).rounded_rectangle(FRAME_OPENING, 145, fill=(0, 0, 0, 255))
-    canvas.paste(screen, DISPLAY[:2], rounded_mask(screen_size, 120))
-    canvas.alpha_composite(bezel)
+    canvas = Image.new("RGBA", overlay.size, (0, 0, 0, 0))
+    canvas.paste(screen, display[:2], opening.crop(display))
+    canvas.alpha_composite(overlay)
     OUTPUT.mkdir(parents=True, exist_ok=True)
     result = canvas.resize((800, 1500), Image.Resampling.LANCZOS)
     result.save(OUTPUT / path.name, optimize=True)
 
 
-if len(sys.argv) == 2:
-    extract_bezel(Path(sys.argv[1]))
-
 bezel_image = Image.open(BEZEL).convert("RGBA")
+bezel_overlay, display_mask = make_overlay(bezel_image)
 for name in NAMES:
-    frame(SOURCE / name, bezel_image)
+    frame(SOURCE / name, bezel_overlay, display_mask)
