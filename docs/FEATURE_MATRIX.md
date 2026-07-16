@@ -26,9 +26,3 @@
 | YouTube surfaces | Runtime validation is still required for selectors that vary between YouTube releases |
 | Compatibility | Non-jailbroken device validation and future YouTube/iOS regression testing |
 
-## Excluded
-
-| Feature | Reason |
-| --- | --- |
-| Attestation bypass | YTKACE does not bypass DRM, account checks, or server attestation |
-| Fix Playback / Account Recovery | The reference implementation changes attestation and account-integrity behavior |
