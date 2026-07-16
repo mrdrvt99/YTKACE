@@ -8,18 +8,17 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     env:
       THEOS: ${{ github.workspace }}/.theos
+      CI: true
       YOUTUBE_IPA_URL: ${{ secrets.YOUTUBE_IPA_URL }}
       YOUTUBE_IPA_SHA256: ${{ secrets.YOUTUBE_IPA_SHA256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup
-        run: |
-          brew install ldid
-          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+        run: bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
 
       - name: Test
         run: python3 -m unittest discover -s Tests -v
@@ -37,7 +36,7 @@ jobs:
 
       - name: Inject
         run: |
-          export LDID="$(brew --prefix)/bin/ldid"
+          export LDID="$THEOS/toolchain/linux/iphone/bin/ldid"
           bash Scripts/sideload-repack.sh YouTube.ipa dist/YTKACE.dylib dist/YTKACE_YouTube.ipa
           bash Tools/verify-artifacts.sh dist/YTKACE.dylib dist/YTKACE_YouTube.ipa
 

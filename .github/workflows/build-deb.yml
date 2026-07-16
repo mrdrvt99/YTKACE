@@ -10,16 +10,15 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     env:
       THEOS: ${{ github.workspace }}/.theos
+      CI: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup
-        run: |
-          brew install ldid
-          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+        run: bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
 
       - name: Test
         run: python3 -m unittest discover -s Tests -v
