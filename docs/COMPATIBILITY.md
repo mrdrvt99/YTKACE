@@ -11,12 +11,8 @@ YouTube baseline that also targets iOS 15.
 
 ## Architectures
 
-YTKACE builds arm64 and arm64e into one universal dylib. The supplied YouTube
-executable is arm64 and selects the arm64 slice on all supported devices.
-
-Linux Theos toolchains can emit an arm64e slice but older Linux linkers may
-warn about the arm64e ABI. Release artifacts must build and verify that slice
-with a current macOS/Xcode toolchain.
+YTKACE builds arm64. The supplied YouTube executable is arm64, including on
+devices that support arm64e.
 
 ## YouTube updates
 

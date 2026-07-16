@@ -78,15 +78,11 @@ build_arch() {
 }
 
 build_arch arm64 arm64-apple-ios16.0
-build_arch arm64e arm64e-apple-ios16.0
 
 rm -rf "$OUTPUT/include"
 cp -R "$BUILD/install-arm64/include" "$OUTPUT/include"
 for library in avformat avcodec avutil; do
-    "$TOOLCHAIN/lipo" -create \
-        "$BUILD/install-arm64/lib/lib$library.a" \
-        "$BUILD/install-arm64e/lib/lib$library.a" \
-        -output "$OUTPUT/lib/lib$library.a"
+    cp "$BUILD/install-arm64/lib/lib$library.a" "$OUTPUT/lib/lib$library.a"
 done
 cp "$SOURCE/COPYING.LGPLv2.1" "$OUTPUT/COPYING.LGPLv2.1"
 cp "$SOURCE/COPYING.LGPLv3" "$OUTPUT/COPYING.LGPLv3"

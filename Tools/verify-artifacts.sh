@@ -20,7 +20,6 @@ fi
 
 if [[ -n "$INFO" ]]; then
   [[ "$INFO" == *arm64* ]]
-  [[ "$INFO" == *arm64e* ]]
 fi
 
 if command -v otool >/dev/null 2>&1; then
