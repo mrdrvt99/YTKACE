@@ -8,8 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "screenshots"
 OUTPUT = SOURCE / "framed"
 BEZEL = SOURCE / "iphone-bezel.png"
-DISPLAY = (190, 190, 1410, 2810)
-CROP = (90, 90, 1510, 2910)
+FRAME_OPENING = (197, 189, 1403, 2811)
+DISPLAY = (220, 220, 1380, 2780)
 NAMES = (
     "settings.png",
     "shorts-download-menu.png",
@@ -34,7 +34,7 @@ def extract_bezel(path):
     bezel = Image.open(path).convert("RGBA")
     alpha = bezel.getchannel("A")
     hole = Image.new("L", bezel.size, 0)
-    ImageDraw.Draw(hole).rounded_rectangle(DISPLAY, 145, fill=255)
+    ImageDraw.Draw(hole).rounded_rectangle(FRAME_OPENING, 145, fill=255)
     bezel.putalpha(ImageChops.subtract(alpha, hole))
     bezel.save(BEZEL, optimize=True)
 
@@ -54,10 +54,11 @@ def frame(path, bezel):
     screen_size = (DISPLAY[2] - DISPLAY[0], DISPLAY[3] - DISPLAY[1])
     screen = cover(Image.open(path).convert("RGBA"), screen_size)
     canvas = Image.new("RGBA", bezel.size, (0, 0, 0, 0))
-    canvas.paste(screen, DISPLAY[:2], rounded_mask(screen_size, 145))
+    ImageDraw.Draw(canvas).rounded_rectangle(FRAME_OPENING, 145, fill=(0, 0, 0, 255))
+    canvas.paste(screen, DISPLAY[:2], rounded_mask(screen_size, 120))
     canvas.alpha_composite(bezel)
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    result = canvas.crop(CROP).resize((710, 1410), Image.Resampling.LANCZOS)
+    result = canvas.resize((800, 1500), Image.Resampling.LANCZOS)
     result.save(OUTPUT / path.name, optimize=True)
 
 
