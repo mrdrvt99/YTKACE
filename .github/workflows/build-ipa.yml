@@ -2,48 +2,53 @@ name: IPA
 
 on:
   workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: YouTube IPA URL
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    env:
-      THEOS: ${{ github.workspace }}/.theos
-      CI: true
-      YOUTUBE_IPA_URL: ${{ secrets.YOUTUBE_IPA_URL }}
-      YOUTUBE_IPA_SHA256: ${{ secrets.YOUTUBE_IPA_SHA256 }}
+    uses: ./.github/workflows/build-deb.yml
+
+  package:
+    needs: build
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: YTKACE-deb
+          path: packages
+
+      - uses: levibostian/action-hide-sensitive-inputs@v1
 
       - name: Setup
-        run: bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
-
-      - name: Test
-        run: python3 -m unittest discover -s Tests -v
-
-      - name: Build
-        run: bash Scripts/build.sh
+        run: brew install ldid dpkg
 
       - name: YouTube
         run: |
-          test -n "$YOUTUBE_IPA_URL"
-          curl --fail --location "$YOUTUBE_IPA_URL" --output YouTube.ipa
-          if [[ -n "$YOUTUBE_IPA_SHA256" ]]; then
-            echo "$YOUTUBE_IPA_SHA256  YouTube.ipa" | shasum -a 256 -c -
+          wget "${{ inputs.ipa_url }}" --no-verbose -O YouTube.ipa
+          file_type=$(file --mime-type -b YouTube.ipa)
+          if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
+            exit 1
           fi
 
       - name: Inject
         run: |
-          export LDID="$THEOS/toolchain/linux/iphone/bin/ldid"
-          bash Scripts/sideload-repack.sh YouTube.ipa dist/YTKACE.dylib dist/YTKACE_YouTube.ipa
-          bash Tools/verify-artifacts.sh dist/YTKACE.dylib dist/YTKACE_YouTube.ipa
+          mkdir tweak
+          dpkg-deb -x packages/*.deb tweak
+          export LDID="$(brew --prefix)/bin/ldid"
+          bash Scripts/sideload-repack.sh YouTube.ipa tweak/Applications/YouTube.app/Frameworks/YTKACE.dylib YTKACE_YouTube.ipa
+          bash Tools/verify-artifacts.sh tweak/Applications/YouTube.app/Frameworks/YTKACE.dylib YTKACE_YouTube.ipa
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: YTKACE-IPA
-          path: |
-            dist/YTKACE.dylib
-            dist/YTKACE_YouTube.ipa
+          path: YTKACE_YouTube.ipa
           if-no-files-found: error
