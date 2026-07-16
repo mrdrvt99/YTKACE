@@ -5,6 +5,9 @@ NS_ASSUME_NONNULL_BEGIN
 typedef void (^YTKACEFFmpegCompletion)(NSError * _Nullable error);
 
 @interface YTKACEFFmpegMuxer : NSObject
++ (void)remuxAudioURL:(NSURL *)audioURL
+            outputURL:(NSURL *)outputURL
+           completion:(YTKACEFFmpegCompletion)completion;
 + (void)remuxVideoURL:(NSURL *)videoURL
              audioURL:(NSURL *)audioURL
             outputURL:(NSURL *)outputURL

@@ -491,6 +491,7 @@ static NSData *YTKACESABRClientInfo(void) {
 @property(nonatomic, assign) NSTimeInterval lastPreparationRequest;
 @property(nonatomic, assign) NSInteger audioStalledRequests;
 @property(nonatomic, assign) NSInteger videoStalledRequests;
+@property(nonatomic, assign) NSInteger stallRecoveryCount;
 @property(nonatomic, assign) BOOL sequentialFallback;
 @property(nonatomic, assign) BOOL finished;
 @property(nonatomic, strong) NSMutableData *activeResponseData;
@@ -503,6 +504,7 @@ static NSData *YTKACESABRClientInfo(void) {
 @property(nonatomic, assign) int64_t activeNetworkBytes;
 - (void)start;
 - (void)cancel;
+- (BOOL)restartStalledSession:(NSString *)reason;
 - (BOOL)switchToSequentialFallback:(NSString *)reason;
 @end
 
@@ -1263,14 +1265,16 @@ static NSData *YTKACESABRClientInfo(void) {
         : (activeTrack.initializationWritten && activeTrack.downloadedBytes > 0);
     if (!self.combinedMode && self.mediaPhase > 0 && terminalMarker &&
         after <= before && hasActiveMedia) {
-        YTKACEDownloadLog(self.identifier, @"terminal marker");
-        [self advanceOrFinish];
+        if ([self restartStalledSession:@"early terminal marker"]) return;
+        [self fail:[self error:@"The SABR stream ended before all media was received."
+                               code:8]];
         return;
     }
     if (after <= before) self.stalledRequests += 1;
     else {
         self.stalledRequests = 0;
         self.retryCount = 0;
+        self.stallRecoveryCount = 0;
     }
     YTKACEDownloadLog(self.identifier,
         @"progress audio=%.3f/%lld video=%.3f/%lld bytes=%lld+%lld stalled=%ld",
@@ -1278,15 +1282,15 @@ static NSData *YTKACESABRClientInfo(void) {
         (double)self.video.downloadedDuration, self.video.endTime,
         self.audio.downloadedBytes, self.video.downloadedBytes,
         (long)self.stalledRequests);
-    BOOL missingInitialization = self.video.endTime == 0 || self.audio.endTime == 0;
+    BOOL missingInitialization = self.audio.endTime == 0 ||
+        (!self.audioOnly && self.video.endTime == 0);
     if (self.combinedMode && missingInitialization && self.stalledRequests >= 3 &&
         [self switchToSequentialFallback:@"missing combined initialization"]) {
         return;
     }
-    if (!self.combinedMode && self.mediaPhase > 0 && missingInitialization &&
-        self.stalledRequests >= 3 && hasActiveMedia) {
-        YTKACEDownloadLog(self.identifier, @"terminal fallback");
-        [self advanceOrFinish];
+    if (!self.combinedMode && self.mediaPhase > 0 &&
+        self.stalledRequests >= 3 && hasActiveMedia &&
+        [self restartStalledSession:@"media stopped advancing"]) {
         return;
     }
     if ((missingInitialization && self.stalledRequests >= 3) || self.stalledRequests > 8) {
@@ -1297,6 +1301,27 @@ static NSData *YTKACESABRClientInfo(void) {
     self.backoffMilliseconds = 0;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
         dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ [self sendRequest]; });
+}
+
+- (BOOL)restartStalledSession:(NSString *)reason {
+    if (self.finished || self.stallRecoveryCount >= 3) return NO;
+    self.stallRecoveryCount += 1;
+    NSTimeInterval delay = MAX(self.backoffMilliseconds, 250) / 1000.0;
+    self.requestNumber = 0;
+    self.stalledRequests = 0;
+    self.retryCount = 0;
+    self.backoffMilliseconds = 0;
+    self.playbackCookie = nil;
+    [self.headers removeAllObjects];
+    [self.contexts removeAllObjects];
+    YTKACEDownloadLog(self.identifier,
+        @"session restart attempt=%ld phase=%ld reason=%@ audio=%.0f/%lld video=%.0f/%lld",
+        (long)self.stallRecoveryCount, (long)self.mediaPhase, reason ?: @"stalled",
+        (double)self.audio.downloadedDuration, self.audio.endTime,
+        (double)self.video.downloadedDuration, self.video.endTime);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+        dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ [self sendRequest]; });
+    return YES;
 }
 
 - (BOOL)switchToSequentialFallback:(NSString *)reason {
@@ -1323,6 +1348,12 @@ static NSData *YTKACESABRClientInfo(void) {
 
 - (void)finish {
     if (self.finished) return;
+    if (![self trackComplete:self.audio] ||
+        (!self.audioOnly && ![self trackComplete:self.video])) {
+        [self fail:[self error:@"The SABR stream ended before all media was received."
+                               code:8]];
+        return;
+    }
     self.finished = YES;
     [self.video.handle closeFile];
     [self.audio.handle closeFile];

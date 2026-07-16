@@ -885,10 +885,36 @@ static const void *YTKACEShortsFullscreenKey = &YTKACEShortsFullscreenKey;
                 return;
             }
             if (job.audioOnly) {
-                [weakSelf saveCompletedURL:audioURL job:job extension:@"m4a"];
                 if (videoURL != nil) {
                     [NSFileManager.defaultManager removeItemAtURL:videoURL error:nil];
                 }
+                [YTKACEDownloadProgressView.sharedView updateJob:job.identifier
+                    stage:@"Finalizing" progress:0.96
+                    downloadedBytes:job.audioBytes totalBytes:job.audioBytes];
+                NSURL *output = [audioURL.URLByDeletingLastPathComponent
+                    URLByAppendingPathComponent:@"final.m4a"];
+                YTKACEDownloadLog(job.identifier, @"audio remux start");
+                [YTKACEFFmpegMuxer remuxAudioURL:audioURL outputURL:output
+                    completion:^(NSError *remuxError) {
+                        if (remuxError != nil) {
+                            [YTKACEDownloadProgressView.sharedView
+                                finishJob:job.identifier success:NO message:@"Failed"];
+                            YTKACEDownloadLog(job.identifier,
+                                @"audio remux failed error=%@",
+                                remuxError.localizedDescription);
+                            [NSFileManager.defaultManager
+                                removeItemAtURL:audioURL.URLByDeletingLastPathComponent
+                                error:nil];
+                            [weakSelf showAlertWithTitle:@"Download failed"
+                                message:[weakSelf failureMessageForError:remuxError
+                                    job:job]];
+                            [weakSelf.activeJobs removeObjectForKey:job.identifier];
+                            return;
+                        }
+                        [NSFileManager.defaultManager removeItemAtURL:audioURL error:nil];
+                        YTKACEDownloadLog(job.identifier, @"audio remux complete");
+                        [weakSelf saveCompletedURL:output job:job extension:@"m4a"];
+                    }];
                 return;
             }
             [YTKACEDownloadProgressView.sharedView updateJob:job.identifier

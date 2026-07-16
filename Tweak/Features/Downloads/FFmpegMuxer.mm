@@ -161,7 +161,84 @@ cleanup:
     return result < 0 ? YTKACEFFmpegError(result, stage) : nil;
 }
 
+static NSError *YTKACERemuxAudio(NSURL *audioURL, NSURL *outputURL) {
+    AVFormatContext *audio = NULL;
+    AVFormatContext *output = NULL;
+    AVPacket *packet = NULL;
+    AVStream *audioInput = NULL;
+    AVStream *audioOutput = NULL;
+    AVDictionary *options = NULL;
+    int audioIndex = -1;
+    NSString *stage = @"Open audio";
+    int result = YTKACEOpenInput(audioURL, AVMEDIA_TYPE_AUDIO, &audio, &audioIndex);
+    if (result < 0) goto cleanup;
+    result = avformat_alloc_output_context2(&output, NULL, "mp4",
+        outputURL.fileSystemRepresentation);
+    stage = @"Create output";
+    if (result < 0 || output == NULL) {
+        if (result >= 0) result = AVERROR_UNKNOWN;
+        goto cleanup;
+    }
+    audioInput = audio->streams[audioIndex];
+    audioOutput = avformat_new_stream(output, NULL);
+    stage = @"Create track";
+    if (audioOutput == NULL) {
+        result = AVERROR(ENOMEM);
+        goto cleanup;
+    }
+    result = avcodec_parameters_copy(audioOutput->codecpar, audioInput->codecpar);
+    if (result < 0) goto cleanup;
+    audioOutput->codecpar->codec_tag = 0;
+    audioOutput->time_base = audioInput->time_base;
+    if ((output->oformat->flags & AVFMT_NOFILE) == 0) {
+        result = avio_open(&output->pb, outputURL.fileSystemRepresentation,
+            AVIO_FLAG_WRITE);
+        stage = @"Open output";
+        if (result < 0) goto cleanup;
+    }
+    av_dict_set(&options, "movflags", "+faststart", 0);
+    result = avformat_write_header(output, &options);
+    stage = @"Write header";
+    if (result < 0) goto cleanup;
+    packet = av_packet_alloc();
+    if (packet == NULL) {
+        result = AVERROR(ENOMEM);
+        stage = @"Create packet";
+        goto cleanup;
+    }
+    while ((result = YTKACEReadPacket(audio, audioIndex, packet)) >= 0) {
+        result = YTKACEWritePacket(output, packet, audioInput, audioOutput);
+        stage = @"Write audio";
+        if (result < 0) goto cleanup;
+    }
+    if (result == AVERROR_EOF) result = 0;
+    if (result < 0) goto cleanup;
+    result = av_write_trailer(output);
+    stage = @"Write trailer";
+
+cleanup:
+    av_dict_free(&options);
+    av_packet_free(&packet);
+    avformat_close_input(&audio);
+    if (output != NULL) {
+        if (output->pb != NULL) avio_closep(&output->pb);
+        avformat_free_context(output);
+    }
+    return result < 0 ? YTKACEFFmpegError(result, stage) : nil;
+}
+
 @implementation YTKACEFFmpegMuxer
+
++ (void)remuxAudioURL:(NSURL *)audioURL
+            outputURL:(NSURL *)outputURL
+           completion:(YTKACEFFmpegCompletion)completion {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        [NSFileManager.defaultManager removeItemAtURL:outputURL error:nil];
+        av_log_set_level(AV_LOG_ERROR);
+        NSError *error = YTKACERemuxAudio(audioURL, outputURL);
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(error); });
+    });
+}
 
 + (void)remuxVideoURL:(NSURL *)videoURL
              audioURL:(NSURL *)audioURL
