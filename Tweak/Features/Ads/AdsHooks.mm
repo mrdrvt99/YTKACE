@@ -1,9 +1,9 @@
 #import "../../YTKACE.h"
 #import "../../Runtime/Hooking.h"
 #import "../../Runtime/Preferences.h"
-
 #import <Foundation/Foundation.h>
 #import <objc/message.h>
+#import <objc/runtime.h>
 
 static IMP OriginalShouldBlockUpgradeDialog;
 static IMP OriginalAdShieldSignals;
@@ -27,6 +27,8 @@ static IMP OriginalIsPlayingAdIntro;
 static IMP OriginalCreateAdsPlaybackCoordinator;
 static IMP OriginalReelContentModel;
 static IMP OriginalInfiniteReelContentModel;
+static IMP OriginalReelShouldDisplay;
+static IMP OriginalASDisplayDidMoveToWindow;
 static IMP OriginalDisplaySections;
 static IMP OriginalAddSections;
 static IMP OriginalCompanionAd;
@@ -222,6 +224,111 @@ static id YTKACEInfiniteReelContentModel(id receiver, SEL selector, id entry) {
         selector,
         entry
     );
+}
+
+static id YTKACEObjectValue(id object, NSString *selectorName) {
+    if (object == nil) return nil;
+    SEL selector = NSSelectorFromString(selectorName);
+    if (![object respondsToSelector:selector]) return nil;
+    @try {
+        return ((id (*)(id, SEL))objc_msgSend)(object, selector);
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+static BOOL YTKACEObjectBool(id object, NSString *selectorName) {
+    if (object == nil) return NO;
+    SEL selector = NSSelectorFromString(selectorName);
+    if (![object respondsToSelector:selector]) return NO;
+    @try {
+        return ((BOOL (*)(id, SEL))objc_msgSend)(object, selector);
+    } @catch (__unused NSException *exception) {
+        return NO;
+    }
+}
+
+static BOOL YTKACEReelObjectLooksLikeAd(id object, NSUInteger depth) {
+    if (object == nil || depth > 3) return NO;
+
+    NSString *className = NSStringFromClass([object class]).lowercaseString;
+    if ([className containsString:@"nonvideoad"] ||
+        [className containsString:@"reelad"] ||
+        [className containsString:@"adselection"] ||
+        [className containsString:@"miniappad"]) {
+        return YES;
+    }
+
+    for (NSString *selectorName in @[
+        @"isAd", @"isAdVideo", @"isVideoAd", @"hasAdLoggingData"
+    ]) {
+        if (YTKACEObjectBool(object, selectorName)) return YES;
+    }
+
+    SEL videoTypeSelector = NSSelectorFromString(@"videoType");
+    if ([object respondsToSelector:videoTypeSelector]) {
+        NSInteger videoType = ((NSInteger (*)(id, SEL))objc_msgSend)(
+            object,
+            videoTypeSelector
+        );
+        if (videoType == 3) return YES;
+    }
+
+    for (NSString *selectorName in @[
+        @"adLoggingData",
+        @"adSlotRenderer",
+        @"reelNonVideoAdRenderer",
+        @"nonVideoAdRenderer",
+        @"sequenceItemAdSelectionRenderer"
+    ]) {
+        if (YTKACEObjectValue(object, selectorName) != nil) return YES;
+    }
+
+    for (NSString *selectorName in @[
+        @"reelModel", @"command", @"watchModel", @"parentWatchModel"
+    ]) {
+        id child = YTKACEObjectValue(object, selectorName);
+        if (child != object && YTKACEReelObjectLooksLikeAd(child, depth + 1)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static BOOL YTKACEReelShouldDisplay(id receiver, SEL selector) {
+    BOOL shouldDisplay = OriginalReelShouldDisplay == NULL ||
+        ((BOOL (*)(id, SEL))OriginalReelShouldDisplay)(receiver, selector);
+    if (!shouldDisplay || !YTKACEFeatureEnabled(YTKACENoAdsKey)) {
+        return shouldDisplay;
+    }
+    if (YTKACEObjectValue(receiver, @"nonVideoContentModel") != nil) {
+        return NO;
+    }
+    return !YTKACEReelObjectLooksLikeAd(receiver, 0);
+}
+
+static BOOL YTKACEIsAdLayoutIdentifier(NSString *identifier) {
+    if (identifier.length == 0) return NO;
+    return [identifier isEqualToString:@"eml_expandable_metadata_vpp"] ||
+        [identifier hasPrefix:@"eml_ad"];
+}
+
+static void YTKACEASDisplayDidMoveToWindow(id receiver, SEL selector) {
+    if (OriginalASDisplayDidMoveToWindow != NULL) {
+        ((void (*)(id, SEL))OriginalASDisplayDidMoveToWindow)(receiver, selector);
+    }
+    if (!YTKACEFeatureEnabled(YTKACENoAdsKey) ||
+        ![receiver respondsToSelector:@selector(window)] ||
+        ((id (*)(id, SEL))objc_msgSend)(receiver, @selector(window)) == nil) {
+        return;
+    }
+    NSString *identifier = YTKACEObjectValue(receiver, @"accessibilityIdentifier");
+    if (!YTKACEIsAdLayoutIdentifier(identifier)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if ([receiver respondsToSelector:@selector(removeFromSuperview)]) {
+            ((void (*)(id, SEL))objc_msgSend)(receiver, @selector(removeFromSuperview));
+        }
+    });
 }
 
 static BOOL YTKACEObjectLooksLikeAd(id object) {
@@ -469,6 +576,14 @@ void YTKACEInstallAdsHooks(void) {
                               @"makeContentModelForEntry:",
                               (IMP)YTKACEInfiniteReelContentModel,
                               &OriginalInfiniteReelContentModel);
+    YTKACEInstallInstanceHook(@"YTReelContentModel",
+                              @"shouldDisplay",
+                              (IMP)YTKACEReelShouldDisplay,
+                              &OriginalReelShouldDisplay);
+    YTKACEInstallInstanceHook(@"_ASDisplayView",
+                              @"didMoveToWindow",
+                              (IMP)YTKACEASDisplayDidMoveToWindow,
+                              &OriginalASDisplayDidMoveToWindow);
     YTKACEInstallInstanceHook(@"YTInnerTubeCollectionViewController",
                               @"displaySectionsWithReloadingSectionControllerByRenderer:",
                               (IMP)YTKACEDisplaySections,

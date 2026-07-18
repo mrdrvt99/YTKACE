@@ -759,7 +759,7 @@ static NSData *YTKACESABRClientInfo(void) {
             });
         }
         self.preparationAttempts += 1;
-        if (self.preparationAttempts > 120) {
+        if (self.preparationAttempts > 300) {
             [self fail:[self error:
                 @"YouTube could not prepare this video automatically. Play it briefly and retry."
                 code:10]];
@@ -789,7 +789,7 @@ static NSData *YTKACESABRClientInfo(void) {
     configuration.HTTPMaximumConnectionsPerHost = 4;
     NSOperationQueue *queue = [NSOperationQueue new];
     queue.maxConcurrentOperationCount = 1;
-    queue.qualityOfService = NSQualityOfServiceUtility;
+    queue.qualityOfService = NSQualityOfServiceUserInitiated;
     self.session = [NSURLSession sessionWithConfiguration:configuration
         delegate:self delegateQueue:queue];
     NSString *serverHost = [NSURL URLWithString:self.serverURL].host ?: @"unknown";

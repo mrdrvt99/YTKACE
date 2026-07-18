@@ -1,6 +1,7 @@
 #import "YTKACEAudioPlayerController.h"
 #import "YTKACEDownloadPlayerController.h"
 #import "MediaArtwork.h"
+#import "../../Settings/YTKACESettingsPages.h"
 
 #import <AVFoundation/AVFoundation.h>
 
@@ -34,7 +35,7 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
 @property(nonatomic, strong) id timeObserver;
 @property(nonatomic, assign) BOOL queueOpen;
 @property(nonatomic, assign) BOOL scrubbing;
-@property(nonatomic, assign) NSInteger sleepIndex;
+@property(nonatomic, assign) NSInteger sleepMinutes;
 @end
 
 @implementation YTKACEAudioPlayerController
@@ -116,7 +117,9 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
     top.alignment = UIStackViewAlignmentCenter;
     top.translatesAutoresizingMaskIntoConstraints = NO;
     [minimize.widthAnchor constraintEqualToConstant:44.0].active = YES;
+    [minimize.heightAnchor constraintEqualToConstant:44.0].active = YES;
     [more.widthAnchor constraintEqualToConstant:44.0].active = YES;
+    [more.heightAnchor constraintEqualToConstant:44.0].active = YES;
     [self.view addSubview:top];
 
     self.artworkView = [UIImageView new];
@@ -152,15 +155,15 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
     [self.view addSubview:self.elapsedLabel];
     [self.view addSubview:self.durationLabel];
 
-    self.repeatButton = [self symbolButton:@"repeat" size:18.0
+    self.repeatButton = [self symbolButton:@"repeat" size:19.0
         action:@selector(toggleRepeat)];
-    UIButton *previous = [self symbolButton:@"backward.end.fill" size:22.0
+    UIButton *previous = [self symbolButton:@"backward.end.fill" size:19.0
         action:@selector(previous)];
-    self.playButton = [self symbolButton:@"pause.fill" size:36.0
+    self.playButton = [self symbolButton:@"pause.fill" size:44.0
         action:@selector(togglePlayback)];
-    UIButton *next = [self symbolButton:@"forward.end.fill" size:22.0
+    UIButton *next = [self symbolButton:@"forward.end.fill" size:19.0
         action:@selector(next)];
-    UIButton *shuffle = [self symbolButton:@"shuffle" size:18.0
+    UIButton *shuffle = [self symbolButton:@"shuffle" size:19.0
         action:@selector(shuffleQueue)];
     UIStackView *controls = [[UIStackView alloc] initWithArrangedSubviews:@[
         self.repeatButton, previous, self.playButton, next, shuffle
@@ -169,6 +172,10 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
     controls.alignment = UIStackViewAlignmentCenter;
     controls.distribution = UIStackViewDistributionEqualSpacing;
     controls.translatesAutoresizingMaskIntoConstraints = NO;
+    for (UIButton *button in @[self.repeatButton, previous, next, shuffle]) {
+        [button.widthAnchor constraintEqualToConstant:44.0].active = YES;
+        [button.heightAnchor constraintEqualToConstant:44.0].active = YES;
+    }
     [self.playButton.widthAnchor constraintEqualToConstant:72.0].active = YES;
     [self.playButton.heightAnchor constraintEqualToConstant:72.0].active = YES;
     [self.view addSubview:controls];
@@ -272,8 +279,14 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.tintColor = UIColor.whiteColor;
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
-    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:symbol]];
+    UIImageSymbolConfiguration *configuration =
+        [UIImageSymbolConfiguration configurationWithPointSize:19.0
+            weight:UIImageSymbolWeightRegular];
+    UIImage *image = [UIImage systemImageNamed:symbol
+                             withConfiguration:configuration];
+    UIImageView *icon = [[UIImageView alloc] initWithImage:image];
     icon.tintColor = UIColor.whiteColor;
+    icon.contentMode = UIViewContentModeScaleAspectFit;
     UILabel *name = [UILabel new];
     name.text = title;
     name.textColor = UIColor.whiteColor;
@@ -281,16 +294,26 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
     UILabel *value = [UILabel new];
     value.textColor = UIColor.systemGray2Color;
     value.font = [UIFont systemFontOfSize:15.0];
+    value.textAlignment = NSTextAlignmentRight;
+    value.lineBreakMode = NSLineBreakByTruncatingTail;
     if (detail != NULL) *detail = value;
+    UIView *spacer = [UIView new];
     UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[
-        icon, name, value
+        icon, name, spacer, value
     ]];
     row.axis = UILayoutConstraintAxisHorizontal;
-    row.spacing = 15.0;
+    row.spacing = 14.0;
     row.alignment = UIStackViewAlignmentCenter;
     row.userInteractionEnabled = NO;
     row.translatesAutoresizingMaskIntoConstraints = NO;
-    [icon.widthAnchor constraintEqualToConstant:28.0].active = YES;
+    [icon.widthAnchor constraintEqualToConstant:26.0].active = YES;
+    [icon.heightAnchor constraintEqualToConstant:26.0].active = YES;
+    [name setContentCompressionResistancePriority:UILayoutPriorityDefaultHigh
+                                          forAxis:UILayoutConstraintAxisHorizontal];
+    [value setContentHuggingPriority:UILayoutPriorityRequired
+                             forAxis:UILayoutConstraintAxisHorizontal];
+    [value setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                            forAxis:UILayoutConstraintAxisHorizontal];
     [button addSubview:row];
     [NSLayoutConstraint activateConstraints:@[
         [row.leadingAnchor constraintEqualToAnchor:button.leadingAnchor constant:15.0],
@@ -330,16 +353,16 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
     UILabel *speedDetail = nil;
     UILabel *sleepDetail = nil;
     UILabel *autoplayDetail = nil;
-    [rows addArrangedSubview:[self optionRow:@"gauge.with.dots.needle.67percent"
-        title:@"Playback Speed" detail:&speedDetail action:@selector(cycleSpeed)]];
+    [rows addArrangedSubview:[self optionRow:@"speedometer"
+        title:@"Playback Speed" detail:&speedDetail action:@selector(selectSpeed)]];
     [rows addArrangedSubview:[self optionRow:@"moon.zzz.fill"
-        title:@"Sleep Timer" detail:&sleepDetail action:@selector(cycleSleep)]];
+        title:@"Sleep Timer" detail:&sleepDetail action:@selector(selectSleep)]];
     [rows addArrangedSubview:[self optionRow:@"forward.end.fill"
         title:@"AutoPlay" detail:&autoplayDetail action:@selector(toggleAutoplay)]];
     self.speedDetail = speedDetail;
     self.sleepDetail = sleepDetail;
     self.autoplayDetail = autoplayDetail;
-    [rows addArrangedSubview:[self optionRow:@"text.line.first.and.arrowtriangle.forward"
+    [rows addArrangedSubview:[self optionRow:@"list.bullet"
         title:@"Play Next" detail:NULL action:@selector(next)]];
     [rows addArrangedSubview:[self optionRow:@"xmark"
         title:@"Close" detail:NULL action:@selector(hideOptions)]];
@@ -386,8 +409,14 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
         ? UIColor.systemRedColor : UIColor.whiteColor;
     self.speedDetail.text = [NSString stringWithFormat:@"· %.2gx",
         self.session.playbackRate];
-    self.sleepDetail.text = self.sleepIndex == 0 ? @"· Off" :
-        [NSString stringWithFormat:@"· %ldm", (long)self.sleepIndex * 15];
+    if (self.session.pauseAtEnd) {
+        self.sleepDetail.text = @"· End of track";
+    } else if (self.sleepTimer.isValid) {
+        self.sleepDetail.text = [NSString stringWithFormat:@"· %ldm",
+            (long)self.sleepMinutes];
+    } else {
+        self.sleepDetail.text = @"· Off";
+    }
     self.autoplayDetail.text = self.session.autoplayEnabled ? @"· On" : @"· Off";
     [self.queueTable reloadData];
     [self refreshTime];
@@ -457,33 +486,57 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
         ![touch.view isDescendantOfView:self.optionsCard];
 }
 
-- (void)cycleSpeed {
-    NSArray<NSNumber *> *speeds = @[@0.5, @0.75, @1.0, @1.25, @1.5, @2.0, @3.0, @4.0, @5.0];
-    NSUInteger next = 0;
+- (void)selectSpeed {
+    NSArray<NSNumber *> *speeds = @[
+        @0.25, @0.5, @0.75, @1.0, @1.25, @1.5, @1.75,
+        @2.0, @2.5, @3.0, @4.0, @5.0
+    ];
+    NSMutableArray<NSString *> *titles = [NSMutableArray array];
+    NSUInteger selected = 0;
     for (NSUInteger index = 0; index < speeds.count; index++) {
-        if (fabs(speeds[index].floatValue - self.session.playbackRate) < 0.01) {
-            next = (index + 1) % speeds.count;
-            break;
+        NSNumber *speed = speeds[index];
+        [titles addObject:[NSString stringWithFormat:@"%.2gx", speed.floatValue]];
+        if (fabs(speed.floatValue - self.session.playbackRate) < 0.01) {
+            selected = index;
         }
     }
-    self.session.playbackRate = speeds[next].floatValue;
-    [self refresh];
+    YTKACEPresentSelectionMenu(self, self.optionsCard, @"Playback Speed", titles,
+        selected, ^(NSUInteger index) {
+            self.session.playbackRate = speeds[index].floatValue;
+            [self refresh];
+        });
 }
 
-- (void)cycleSleep {
-    self.sleepIndex = (self.sleepIndex + 1) % 5;
-    [self.sleepTimer invalidate];
-    self.sleepTimer = nil;
-    if (self.sleepIndex != 0) {
-        self.sleepTimer = [NSTimer scheduledTimerWithTimeInterval:
-            self.sleepIndex * 15.0 * 60.0 target:self selector:@selector(sleepFired)
-            userInfo:nil repeats:NO];
+- (void)selectSleep {
+    NSArray<NSString *> *titles = @[
+        @"Off", @"End of track", @"15 Minutes", @"30 Minutes",
+        @"45 Minutes", @"60 Minutes"
+    ];
+    NSArray<NSNumber *> *minutes = @[@0, @0, @15, @30, @45, @60];
+    NSUInteger selected = self.session.pauseAtEnd ? 1 : 0;
+    if (self.sleepTimer.isValid) {
+        NSUInteger match = [minutes indexOfObject:@(self.sleepMinutes)];
+        if (match != NSNotFound) selected = match;
     }
-    [self refresh];
+    YTKACEPresentSelectionMenu(self, self.optionsCard, @"Sleep Timer", titles,
+        selected, ^(NSUInteger index) {
+            [self.sleepTimer invalidate];
+            self.sleepTimer = nil;
+            self.sleepMinutes = 0;
+            self.session.pauseAtEnd = index == 1;
+            NSInteger minute = minutes[index].integerValue;
+            if (minute > 0) {
+                self.sleepMinutes = minute;
+                self.sleepTimer = [NSTimer scheduledTimerWithTimeInterval:
+                    minute * 60.0 target:self selector:@selector(sleepFired)
+                    userInfo:nil repeats:NO];
+            }
+            [self refresh];
+        });
 }
 
 - (void)sleepFired {
-    self.sleepIndex = 0;
+    self.sleepMinutes = 0;
     self.sleepTimer = nil;
     [self.session pause];
     [self refresh];

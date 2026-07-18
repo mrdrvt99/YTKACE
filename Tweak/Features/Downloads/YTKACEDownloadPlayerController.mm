@@ -1,5 +1,6 @@
 #import "YTKACEDownloadPlayerController.h"
 #import "MediaArtwork.h"
+#import "../../Settings/YTKACESettingsPages.h"
 
 #import <AVFoundation/AVFoundation.h>
 #import <MediaPlayer/MediaPlayer.h>
@@ -324,7 +325,10 @@ static NSArray<YTKACESubtitleCue *> *YTKACEReadSubtitles(NSURL *mediaURL) {
     if (notification.object != self.player.currentItem) {
         return;
     }
-    if (self.repeatEnabled) {
+    if (self.pauseAtEnd) {
+        self.pauseAtEnd = NO;
+        [self pause];
+    } else if (self.repeatEnabled) {
         [self.player seekToTime:kCMTimeZero completionHandler:^(__unused BOOL finished) {
             [self play];
         }];
@@ -402,6 +406,7 @@ static NSArray<YTKACESubtitleCue *> *YTKACEReadSubtitles(NSURL *mediaURL) {
 @property(nonatomic, strong) UILabel *autoplayDetail;
 @property(nonatomic, strong) NSTimer *hideTimer;
 @property(nonatomic, strong) NSTimer *sleepTimer;
+@property(nonatomic, assign) NSInteger sleepMinutes;
 @property(nonatomic, strong) id timeObserver;
 @property(nonatomic, strong) UILabel *subtitleLabel;
 @property(nonatomic, copy) NSArray<YTKACESubtitleCue *> *subtitleCues;
@@ -507,18 +512,20 @@ static NSArray<YTKACESubtitleCue *> *YTKACEReadSubtitles(NSURL *mediaURL) {
     top.spacing = 14.0;
     top.translatesAutoresizingMaskIntoConstraints = NO;
     [minimize.widthAnchor constraintEqualToConstant:44.0].active = YES;
+    [minimize.heightAnchor constraintEqualToConstant:44.0].active = YES;
     [more.widthAnchor constraintEqualToConstant:44.0].active = YES;
+    [more.heightAnchor constraintEqualToConstant:44.0].active = YES;
     [self.controlsView addSubview:top];
 
-    UIButton *back = [self buttonWithSymbol:@"gobackward.10" size:27.0
+    UIButton *back = [self buttonWithSymbol:@"gobackward.10" size:22.0
                                       action:@selector(skipBack)];
-    UIButton *previous = [self buttonWithSymbol:@"backward.end.fill" size:25.0
+    UIButton *previous = [self buttonWithSymbol:@"backward.end.fill" size:22.0
                                           action:@selector(previousItem)];
-    self.playButton = [self buttonWithSymbol:@"pause.fill" size:40.0
+    self.playButton = [self buttonWithSymbol:@"pause.fill" size:48.0
                                       action:@selector(togglePlayback)];
-    UIButton *next = [self buttonWithSymbol:@"forward.end.fill" size:25.0
+    UIButton *next = [self buttonWithSymbol:@"forward.end.fill" size:22.0
                                       action:@selector(nextItem)];
-    UIButton *forward = [self buttonWithSymbol:@"goforward.10" size:27.0
+    UIButton *forward = [self buttonWithSymbol:@"goforward.10" size:22.0
                                          action:@selector(skipForward)];
     UIStackView *center = [[UIStackView alloc] initWithArrangedSubviews:@[
         back, previous, self.playButton, next, forward
@@ -527,6 +534,10 @@ static NSArray<YTKACESubtitleCue *> *YTKACEReadSubtitles(NSURL *mediaURL) {
     center.alignment = UIStackViewAlignmentCenter;
     center.distribution = UIStackViewDistributionEqualSpacing;
     center.translatesAutoresizingMaskIntoConstraints = NO;
+    for (UIButton *button in @[back, previous, next, forward]) {
+        [button.widthAnchor constraintEqualToConstant:46.0].active = YES;
+        [button.heightAnchor constraintEqualToConstant:46.0].active = YES;
+    }
     [self.playButton.widthAnchor constraintEqualToConstant:78.0].active = YES;
     [self.playButton.heightAnchor constraintEqualToConstant:78.0].active = YES;
     [self.controlsView addSubview:center];
@@ -549,6 +560,10 @@ static NSArray<YTKACESubtitleCue *> *YTKACEReadSubtitles(NSURL *mediaURL) {
                                         action:@selector(toggleAspect)];
     self.repeatButton = [self buttonWithSymbol:@"repeat" size:24.0
                                         action:@selector(toggleRepeat)];
+    [aspect.widthAnchor constraintEqualToConstant:44.0].active = YES;
+    [aspect.heightAnchor constraintEqualToConstant:44.0].active = YES;
+    [self.repeatButton.widthAnchor constraintEqualToConstant:44.0].active = YES;
+    [self.repeatButton.heightAnchor constraintEqualToConstant:44.0].active = YES;
     UIStackView *bottomButtons = [[UIStackView alloc] initWithArrangedSubviews:@[
         aspect, [UIView new], self.repeatButton
     ]];
@@ -572,6 +587,9 @@ static NSArray<YTKACESubtitleCue *> *YTKACEReadSubtitles(NSURL *mediaURL) {
     [self.view addSubview:self.subtitleLabel];
 
     UILayoutGuide *safe = self.controlsView.safeAreaLayoutGuide;
+    NSLayoutConstraint *centerWidth = [center.widthAnchor
+        constraintEqualToAnchor:self.controlsView.widthAnchor multiplier:0.84];
+    centerWidth.priority = UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
         [self.playerSurface.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [self.playerSurface.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
@@ -587,7 +605,7 @@ static NSArray<YTKACESubtitleCue *> *YTKACEReadSubtitles(NSURL *mediaURL) {
         [center.centerXAnchor constraintEqualToAnchor:self.controlsView.centerXAnchor],
         [center.centerYAnchor constraintEqualToAnchor:self.controlsView.centerYAnchor],
         [center.widthAnchor constraintLessThanOrEqualToConstant:540.0],
-        [center.widthAnchor constraintEqualToAnchor:self.controlsView.widthAnchor multiplier:0.55],
+        centerWidth,
         [self.slider.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:28.0],
         [self.slider.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-28.0],
         [self.slider.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-70.0],
@@ -677,8 +695,12 @@ static NSArray<YTKACESubtitleCue *> *YTKACEReadSubtitles(NSURL *mediaURL) {
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.tintColor = UIColor.whiteColor;
     [button addTarget:self action:selector forControlEvents:UIControlEventTouchUpInside];
+    UIImageSymbolConfiguration *configuration =
+        [UIImageSymbolConfiguration configurationWithPointSize:20.0
+                                                        weight:UIImageSymbolWeightRegular];
+    UIImage *image = [UIImage systemImageNamed:symbol withConfiguration:configuration];
     UIImageView *icon = [[UIImageView alloc] initWithImage:
-        [[UIImage systemImageNamed:symbol] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]];
+        [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]];
     icon.tintColor = UIColor.whiteColor;
     icon.contentMode = UIViewContentModeScaleAspectFit;
     UILabel *name = [UILabel new];
@@ -696,10 +718,11 @@ static NSArray<YTKACESubtitleCue *> *YTKACEReadSubtitles(NSURL *mediaURL) {
     ]];
     stack.userInteractionEnabled = NO;
     stack.axis = UILayoutConstraintAxisHorizontal;
-    stack.spacing = 16.0;
+    stack.spacing = 14.0;
     stack.alignment = UIStackViewAlignmentCenter;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
-    [icon.widthAnchor constraintEqualToConstant:42.0].active = YES;
+    [icon.widthAnchor constraintEqualToConstant:26.0].active = YES;
+    [icon.heightAnchor constraintEqualToConstant:26.0].active = YES;
     [button addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[
         [stack.topAnchor constraintEqualToAnchor:button.topAnchor],
@@ -749,7 +772,14 @@ static NSArray<YTKACESubtitleCue *> *YTKACEReadSubtitles(NSURL *mediaURL) {
     self.repeatButton.tintColor = self.session.repeatEnabled
         ? UIColor.systemRedColor : UIColor.whiteColor;
     self.speedDetail.text = [NSString stringWithFormat:@"· %.2gx", self.session.playbackRate];
-    self.sleepDetail.text = self.sleepTimer.isValid ? @"· On" : @"· Off";
+    if (self.session.pauseAtEnd) {
+        self.sleepDetail.text = @"· End of track";
+    } else if (self.sleepTimer.isValid) {
+        self.sleepDetail.text = [NSString stringWithFormat:@"· %ldm",
+            (long)self.sleepMinutes];
+    } else {
+        self.sleepDetail.text = @"· Off";
+    }
     self.gesturesDetail.text = self.session.gesturesEnabled ? @"· On" : @"· Off";
     self.autoplayDetail.text = self.session.autoplayEnabled ? @"· On" : @"· Off";
     YTKACESubtitleCue *activeCue = nil;
@@ -845,54 +875,56 @@ static NSArray<YTKACESubtitleCue *> *YTKACEReadSubtitles(NSURL *mediaURL) {
 }
 
 - (void)selectSpeed {
-    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Playback Speed"
-        message:nil preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSNumber *> *speeds = @[@0.25, @0.5, @0.75, @1.0, @1.25, @1.5, @1.75,
                                     @2.0, @2.5, @3.0, @4.0, @5.0];
-    for (NSNumber *speed in speeds) {
-        NSString *title = [NSString stringWithFormat:@"%.2gx", speed.floatValue];
-        [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
-            handler:^(__unused UIAlertAction *action) {
-                self.session.playbackRate = speed.floatValue;
-                [self refreshControls];
-            }]];
+    NSMutableArray<NSString *> *titles = [NSMutableArray array];
+    NSUInteger selected = 0;
+    for (NSUInteger index = 0; index < speeds.count; index++) {
+        NSNumber *speed = speeds[index];
+        [titles addObject:[NSString stringWithFormat:@"%.2gx", speed.floatValue]];
+        if (fabs(speed.floatValue - self.session.playbackRate) < 0.01) {
+            selected = index;
+        }
     }
-    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    menu.popoverPresentationController.sourceView = self.optionsView;
-    menu.popoverPresentationController.sourceRect = CGRectMake(
-        CGRectGetMidX(self.optionsView.bounds), CGRectGetMidY(self.optionsView.bounds), 1.0, 1.0);
-    [self presentViewController:menu animated:YES completion:nil];
+    YTKACEPresentSelectionMenu(self, self.optionsCard, @"Playback Speed", titles,
+        selected, ^(NSUInteger index) {
+            self.session.playbackRate = speeds[index].floatValue;
+            [self refreshControls];
+        });
 }
 
 - (void)selectSleepTimer {
-    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Sleep Timer"
-        message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    NSArray<NSNumber *> *minutes = @[@0, @15, @30, @45, @60];
-    for (NSNumber *minute in minutes) {
-        NSString *title = minute.integerValue == 0
-            ? @"Off" : [NSString stringWithFormat:@"%@ Minutes", minute];
-        [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
-            handler:^(__unused UIAlertAction *action) {
-                [self.sleepTimer invalidate];
-                self.sleepTimer = nil;
-                if (minute.integerValue > 0) {
-                    self.sleepTimer = [NSTimer scheduledTimerWithTimeInterval:
-                        minute.doubleValue * 60.0 target:self
-                        selector:@selector(sleepTimerFired) userInfo:nil repeats:NO];
-                }
-                [self refreshControls];
-            }]];
+    NSArray<NSString *> *titles = @[
+        @"Off", @"End of track", @"15 Minutes", @"30 Minutes",
+        @"45 Minutes", @"60 Minutes"
+    ];
+    NSArray<NSNumber *> *minutes = @[@0, @0, @15, @30, @45, @60];
+    NSUInteger selected = self.session.pauseAtEnd ? 1 : 0;
+    if (self.sleepTimer.isValid) {
+        NSUInteger match = [minutes indexOfObject:@(self.sleepMinutes)];
+        if (match != NSNotFound) selected = match;
     }
-    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    menu.popoverPresentationController.sourceView = self.optionsView;
-    menu.popoverPresentationController.sourceRect = CGRectMake(
-        CGRectGetMidX(self.optionsView.bounds), CGRectGetMidY(self.optionsView.bounds), 1.0, 1.0);
-    [self presentViewController:menu animated:YES completion:nil];
+    YTKACEPresentSelectionMenu(self, self.optionsCard, @"Sleep Timer", titles,
+        selected, ^(NSUInteger index) {
+            [self.sleepTimer invalidate];
+            self.sleepTimer = nil;
+            self.sleepMinutes = 0;
+            self.session.pauseAtEnd = index == 1;
+            NSInteger minute = minutes[index].integerValue;
+            if (minute > 0) {
+                self.sleepMinutes = minute;
+                self.sleepTimer = [NSTimer scheduledTimerWithTimeInterval:
+                    minute * 60.0 target:self selector:@selector(sleepTimerFired)
+                    userInfo:nil repeats:NO];
+            }
+            [self refreshControls];
+        });
 }
 
 - (void)sleepTimerFired {
     [self.session pause];
     self.sleepTimer = nil;
+    self.sleepMinutes = 0;
     [self refreshControls];
 }
 

@@ -18,6 +18,7 @@ extern NSNotificationName const YTKACEDownloadPlaybackDidStopNotification;
 @property(nonatomic, assign) BOOL autoplayEnabled;
 @property(nonatomic, assign) BOOL gesturesEnabled;
 @property(nonatomic, assign) BOOL repeatEnabled;
+@property(nonatomic, assign) BOOL pauseAtEnd;
 @property(nonatomic, assign) float playbackRate;
 
 - (void)loadURL:(NSURL *)URL

@@ -3,7 +3,9 @@
 
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
+#import <UIKit/UIKit.h>
 #import <objc/message.h>
+#import <objc/runtime.h>
 
 static NSString * const YTKACEYouTubeIdentifier = @"com.google.ios.youtube";
 static NSString * const YTKACEYouTubeName = @"YouTube";
@@ -15,6 +17,7 @@ static IMP OriginalInfoValue;
 static IMP OriginalSSOSetTemporary;
 static IMP OriginalSSOConfigurationInit;
 static IMP OriginalGroupContainerURL;
+static IMP OriginalApplicationSetDelegate;
 
 static BOOL YTKACEIsSideloaded(void) {
     NSURL *receiptURL = NSBundle.mainBundle.appStoreReceiptURL;
@@ -199,24 +202,88 @@ static NSURL *YTKACEGroupContainerURL(NSFileManager *receiver,
     return fallback;
 }
 
+static BOOL YTKACEApplicationOpenURL(id receiver,
+                                     SEL selector,
+                                     UIApplication *application,
+                                     NSURL *URL,
+                                     NSDictionary *options) {
+    (void)selector;
+    SEL legacy = NSSelectorFromString(
+        @"application:openURL:sourceApplication:annotation:"
+    );
+    if ([receiver respondsToSelector:legacy]) {
+        id source = options[UIApplicationOpenURLOptionsSourceApplicationKey];
+        id annotation = options[UIApplicationOpenURLOptionsAnnotationKey];
+        return ((BOOL (*)(id, SEL, id, id, id, id))objc_msgSend)(
+            receiver,
+            legacy,
+            application,
+            URL,
+            source,
+            annotation
+        );
+    }
+    SEL older = NSSelectorFromString(@"application:handleOpenURL:");
+    if ([receiver respondsToSelector:older]) {
+        return ((BOOL (*)(id, SEL, id, id))objc_msgSend)(
+            receiver,
+            older,
+            application,
+            URL
+        );
+    }
+    return NO;
+}
+
+static void YTKACEApplicationSetDelegate(UIApplication *receiver,
+                                         SEL selector,
+                                         id delegate) {
+    if (delegate != nil &&
+        [NSBundle.mainBundle objectForInfoDictionaryKey:
+            @"LSSupportsOpeningDocumentsInPlace"] != nil) {
+        SEL openSelector = NSSelectorFromString(@"application:openURL:options:");
+        Class delegateClass = object_getClass(delegate);
+        if (class_getInstanceMethod(delegateClass, openSelector) == NULL) {
+            class_addMethod(delegateClass,
+                            openSelector,
+                            (IMP)YTKACEApplicationOpenURL,
+                            "B@:@@@");
+        }
+    }
+    if (OriginalApplicationSetDelegate != NULL) {
+        ((void (*)(id, SEL, id))OriginalApplicationSetDelegate)(
+            receiver,
+            selector,
+            delegate
+        );
+    }
+}
+
 void YTKACEInstallSideloadCompatibilityHooks(void) {
     if (!YTKACEIsSideloaded()) {
         return;
     }
     YTKACECurrentAccessGroup();
 
-    YTKACEInstallClassHook(@"NSBundle", @"bundleWithIdentifier:",
-                           (IMP)YTKACEBundleWithIdentifier,
-                           &OriginalBundleWithIdentifier);
-    YTKACEInstallInstanceHook(@"NSBundle", @"bundleIdentifier",
-                              (IMP)YTKACEBundleIdentifier,
-                              &OriginalBundleIdentifier);
-    YTKACEInstallInstanceHook(@"NSBundle", @"infoDictionary",
-                              (IMP)YTKACEInfoDictionary,
-                              &OriginalInfoDictionary);
-    YTKACEInstallInstanceHook(@"NSBundle", @"objectForInfoDictionaryKey:",
-                              (IMP)YTKACEInfoValue,
-                              &OriginalInfoValue);
+    YTKACEInstallInstanceHook(@"UIApplication", @"setDelegate:",
+                              (IMP)YTKACEApplicationSetDelegate,
+                              &OriginalApplicationSetDelegate);
+
+    NSString *realIdentifier = NSBundle.mainBundle.bundleIdentifier;
+    if (![realIdentifier isEqualToString:YTKACEYouTubeIdentifier]) {
+        YTKACEInstallClassHook(@"NSBundle", @"bundleWithIdentifier:",
+                               (IMP)YTKACEBundleWithIdentifier,
+                               &OriginalBundleWithIdentifier);
+        YTKACEInstallInstanceHook(@"NSBundle", @"bundleIdentifier",
+                                  (IMP)YTKACEBundleIdentifier,
+                                  &OriginalBundleIdentifier);
+        YTKACEInstallInstanceHook(@"NSBundle", @"infoDictionary",
+                                  (IMP)YTKACEInfoDictionary,
+                                  &OriginalInfoDictionary);
+        YTKACEInstallInstanceHook(@"NSBundle", @"objectForInfoDictionaryKey:",
+                                  (IMP)YTKACEInfoValue,
+                                  &OriginalInfoValue);
+    }
 
     YTKACEInstallClassHook(@"YTVersionUtils", @"appName",
                            (IMP)YTKACEAppName, NULL);

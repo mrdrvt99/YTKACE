@@ -204,20 +204,17 @@ static UIImage *YTKACEBlankChoiceIcon(void) {
     return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
-void YTKACEPresentChoiceMenu(UIViewController *presenter,
-                             UIView *sourceView,
-                             NSString *title,
-                             NSArray<NSString *> *titles,
-                             NSArray *values,
-                             NSString *key,
-                             NSUInteger defaultIndex,
-                             YTKACEChoiceHandler handler) {
+void YTKACEPresentSelectionMenu(UIViewController *presenter,
+                                UIView *sourceView,
+                                NSString *title,
+                                NSArray<NSString *> *titles,
+                                NSUInteger selectedIndex,
+                                YTKACEChoiceHandler handler) {
     (void)title;
-    id selected = YTKACEPreferenceObject(key);
-    NSUInteger selectedIndex = [values indexOfObject:selected];
-    if (selectedIndex == NSNotFound) {
-        selectedIndex = MIN(defaultIndex, values.count - 1);
+    if (titles.count == 0) {
+        return;
     }
+    selectedIndex = MIN(selectedIndex, titles.count - 1);
     Class sheetClass = NSClassFromString(@"YTDefaultSheetController");
     Class actionClass = NSClassFromString(@"YTActionSheetAction");
     SEL makeSheet = NSSelectorFromString(
@@ -234,7 +231,6 @@ void YTKACEPresentChoiceMenu(UIViewController *presenter,
         [titles enumerateObjectsUsingBlock:^(NSString *choice, NSUInteger index, BOOL *stop) {
             (void)stop;
             dispatch_block_t selection = ^{
-                YTKACEStorePickerValue(key, values[index], index);
                 if (handler != nil) {
                     handler(index);
                 }
@@ -262,6 +258,39 @@ void YTKACEPresentChoiceMenu(UIViewController *presenter,
         return;
     }
     YTKACEShowNotice(@"YouTube menu unavailable");
+}
+
+void YTKACEPresentChoiceMenu(UIViewController *presenter,
+                             UIView *sourceView,
+                             NSString *title,
+                             NSArray<NSString *> *titles,
+                             NSArray *values,
+                             NSString *key,
+                             NSUInteger defaultIndex,
+                             YTKACEChoiceHandler handler) {
+    id selected = YTKACEPreferenceObject(key);
+    NSUInteger selectedIndex = [values indexOfObject:selected];
+    if (selectedIndex == NSNotFound) {
+        selectedIndex = MIN(defaultIndex, values.count - 1);
+    }
+    YTKACEPresentSelectionMenu(presenter, sourceView, title, titles, selectedIndex,
+        ^(NSUInteger index) {
+            YTKACEStorePickerValue(key, values[index], index);
+            if (([key isEqualToString:@"kBrightnessSide"] ||
+                 [key isEqualToString:@"kVolumeSide"]) && index < 2) {
+                NSString *otherKey = [key isEqualToString:@"kBrightnessSide"]
+                    ? @"kVolumeSide" : @"kBrightnessSide";
+                id otherValue = YTKACEPreferenceObject(otherKey);
+                NSInteger otherSide = otherValue == nil
+                    ? ([otherKey isEqualToString:@"kBrightnessSide"] ? 1 : 0)
+                    : [otherValue integerValue];
+                if (otherSide == [values[index] integerValue]) {
+                    YTKACEStorePickerValue(otherKey, @([values[index] integerValue] == 0),
+                                           [values[index] integerValue] == 0 ? 1 : 0);
+                }
+            }
+            if (handler != nil) handler(index);
+        });
 }
 
 NSString *YTKACEPickerSummary(NSString *key,
@@ -632,8 +661,14 @@ willDisplayHeaderView:(UIView *)view
         YTKACEPresentChoiceMenu(self, cell, item[@"title"], item[@"titles"],
             item[@"values"], item[@"key"],
             [item[@"default"] unsignedIntegerValue], ^(__unused NSUInteger index) {
-                [self.tableView reloadRowsAtIndexPaths:@[indexPath]
-                                      withRowAnimation:UITableViewRowAnimationNone];
+                NSString *key = item[@"key"];
+                if ([key isEqualToString:@"kBrightnessSide"] ||
+                    [key isEqualToString:@"kVolumeSide"]) {
+                    [self.tableView reloadData];
+                } else {
+                    [self.tableView reloadRowsAtIndexPaths:@[indexPath]
+                                          withRowAnimation:UITableViewRowAnimationNone];
+                }
                 if (YTKACEPreferenceNeedsRestart(item[@"key"])) {
                     YTKACEShowRestartNotice(self);
                 }
@@ -932,12 +967,12 @@ UIViewController *YTKACEMakeMiscOptionsController(void) {
 }
 
 UIViewController *YTKACEMakeGestureOptionsController(void) {
-    NSArray *sideTitles = @[@"Left Side", @"Right Side", @"Disabled"];
+    NSArray *sideTitles = @[@"Right", @"Left", @"Disabled"];
     NSArray *sideValues = @[@0, @1, @2];
     return YTKACEPage(@"Gestures", @[
         @[
-            YTKACEPicker(@"Brightness", @"kBrightnessSide", sideTitles, sideValues, 2, @"", @""),
-            YTKACEPicker(@"Volume", @"kVolumeSide", sideTitles, sideValues, 2, @"", @""),
+            YTKACEPicker(@"Brightness", @"kBrightnessSide", sideTitles, sideValues, 1, @"", @""),
+            YTKACEPicker(@"Volume", @"kVolumeSide", sideTitles, sideValues, 0, @"", @""),
             YTKACEText(@"Set which side controls brightness and volume.\n\nTips:\n1. In portrait mode, swipe down on either side of the player.\n2. In fullscreen, swipe from the bottom area due to YouTube’s gesture handling.")
         ],
         @[

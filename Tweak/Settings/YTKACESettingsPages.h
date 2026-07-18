@@ -21,6 +21,12 @@ FOUNDATION_EXPORT NSString *YTKACEPickerSummary(NSString *key,
 FOUNDATION_EXPORT void YTKACEShowRestartNotice(UIViewController *controller);
 FOUNDATION_EXPORT BOOL YTKACEPreferenceNeedsRestart(NSString *key);
 typedef void (^YTKACEChoiceHandler)(NSUInteger index);
+FOUNDATION_EXPORT void YTKACEPresentSelectionMenu(UIViewController *presenter,
+                                                  UIView *sourceView,
+                                                  NSString *title,
+                                                  NSArray<NSString *> *titles,
+                                                  NSUInteger selectedIndex,
+                                                  YTKACEChoiceHandler handler);
 FOUNDATION_EXPORT void YTKACEPresentChoiceMenu(UIViewController *presenter,
                                                UIView *sourceView,
                                                NSString *title,

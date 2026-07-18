@@ -16,7 +16,7 @@
 @implementation YTKACEDownloadProgressItem
 @end
 
-@interface YTKACEDownloadProgressView ()
+@interface YTKACEDownloadProgressView () <UIGestureRecognizerDelegate>
 @property(nonatomic, strong) UIView *card;
 @property(nonatomic, strong) UIImageView *thumbnailView;
 @property(nonatomic, strong) UILabel *titleLabel;
@@ -25,6 +25,7 @@
 @property(nonatomic, strong) UIProgressView *progressView;
 @property(nonatomic, strong) UIButton *cancelButton;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, YTKACEDownloadProgressItem *> *items;
+@property(nonatomic, strong) NSMutableArray<NSString *> *activeIdentifiers;
 @property(nonatomic, copy, nullable) NSString *visibleIdentifier;
 @property(nonatomic, strong) NSTimer *positionTimer;
 @end
@@ -42,6 +43,7 @@
     self = [super init];
     if (self) {
         _items = [NSMutableDictionary dictionary];
+        _activeIdentifiers = [NSMutableArray array];
         [self makeUI];
     }
     return self;
@@ -56,6 +58,11 @@
     self.card.layer.shadowRadius = 12.0;
     self.card.layer.shadowOffset = CGSizeMake(0.0, 4.0);
     self.card.alpha = 0.0;
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
+        initWithTarget:self action:@selector(cycleTapped)];
+    tap.cancelsTouchesInView = NO;
+    tap.delegate = self;
+    [self.card addGestureRecognizer:tap];
 
     self.thumbnailView = [UIImageView new];
     self.thumbnailView.contentMode = UIViewContentModeScaleAspectFill;
@@ -157,9 +164,13 @@
     if (item == nil) return;
     [self attach];
     self.titleLabel.text = item.title;
-    NSString *count = self.items.count > 1
-        ? [NSString stringWithFormat:@"  •  %lu active", (unsigned long)self.items.count]
-        : @"";
+    NSString *count = @"";
+    if (self.activeIdentifiers.count > 1) {
+        NSUInteger index = [self.activeIdentifiers indexOfObject:item.identifier];
+        NSUInteger position = index == NSNotFound ? 1 : index + 1;
+        count = [NSString stringWithFormat:@"  •  %lu/%lu active",
+            (unsigned long)position, (unsigned long)self.activeIdentifiers.count];
+    }
     NSString *bytes = @"";
     if (item.downloadedBytes > 0) {
         NSString *done = [NSByteCountFormatter stringFromByteCount:item.downloadedBytes
@@ -222,6 +233,8 @@
         item.stage = @"Preparing";
         item.thumbnailURL = thumbnailURL;
         self.items[identifier] = item;
+        [self.activeIdentifiers removeObject:identifier];
+        [self.activeIdentifiers addObject:identifier];
         self.visibleIdentifier = identifier;
         [self renderItem:item];
         [self loadThumbnailForItem:item];
@@ -259,9 +272,16 @@
         if ([self.visibleIdentifier isEqualToString:identifier]) [self renderItem:item];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC),
                        dispatch_get_main_queue(), ^{
+            NSUInteger removedIndex = [self.activeIdentifiers indexOfObject:identifier];
             [self.items removeObjectForKey:identifier];
+            [self.activeIdentifiers removeObject:identifier];
             if (self.items.count != 0) {
-                self.visibleIdentifier = self.items.allKeys.lastObject;
+                if ([self.visibleIdentifier isEqualToString:identifier] ||
+                    self.items[self.visibleIdentifier] == nil) {
+                    NSUInteger nextIndex = removedIndex == NSNotFound ? 0 :
+                        MIN(removedIndex, self.activeIdentifiers.count - 1);
+                    self.visibleIdentifier = self.activeIdentifiers[nextIndex];
+                }
                 [self renderItem:self.items[self.visibleIdentifier]];
                 return;
             }
@@ -278,6 +298,23 @@
             }];
         });
     });
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+       shouldReceiveTouch:(UITouch *)touch {
+    (void)gestureRecognizer;
+    return ![touch.view isDescendantOfView:self.cancelButton];
+}
+
+- (void)cycleTapped {
+    if (self.activeIdentifiers.count < 2) return;
+    NSUInteger index = [self.activeIdentifiers indexOfObject:self.visibleIdentifier];
+    NSUInteger nextIndex = index == NSNotFound ? 0 :
+        (index + 1) % self.activeIdentifiers.count;
+    self.visibleIdentifier = self.activeIdentifiers[nextIndex];
+    [self renderItem:self.items[self.visibleIdentifier]];
+    UISelectionFeedbackGenerator *feedback = [UISelectionFeedbackGenerator new];
+    [feedback selectionChanged];
 }
 
 - (void)cancelTapped {
