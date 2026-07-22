@@ -8,6 +8,23 @@
 
 static const void *YTKACETabSwitchKey = &YTKACETabSwitchKey;
 
+static UIImage *YTKACETabEditorIcon(NSString *token, NSString *fallback) {
+    NSDictionary *assets = @{
+        @"music": @"yt_outline_music_24pt_3x_Normal",
+        @"live": @"live_24pt_3x_Normal",
+        @"gaming": @"gaming_24pt_3x_Normal",
+        @"news": @"news_24pt_3x_Normal",
+        @"sports": @"G_sport",
+        @"learning": @"G_Learning",
+        @"fashion": @"fashion_24pt_3x_Normal",
+        @"playlists": @"playlist",
+        @"history": @"history",
+        @"notifications": @"ic_notifications_none_3x_Normal",
+        @"watchlater": @"clock_24pt_3x_Normal"
+    };
+    return YTKACEAssetImage(assets[token], fallback);
+}
+
 @interface YTKACETabEditorController ()
 @property(nonatomic, strong) NSMutableArray<NSMutableDictionary *> *activeTabs;
 @property(nonatomic, strong) NSMutableArray<NSMutableDictionary *> *inactiveTabs;
@@ -65,12 +82,22 @@ static const void *YTKACETabSwitchKey = &YTKACETabSwitchKey;
         [self tab:@"live" title:@"Live" symbol:@"dot.radiowaves.left.and.right" key:@"kHideLive"],
         [self tab:@"gaming" title:@"Gaming" symbol:@"gamecontroller" key:@"kHideGaming"],
         [self tab:@"news" title:@"News" symbol:@"newspaper" key:@"kHideNews"],
-        [self tab:@"sports" title:@"Sports" symbol:@"trophy" key:@"kHideSports"]
+        [self tab:@"sports" title:@"Sports" symbol:@"trophy" key:@"kHideSports"],
+        [self tab:@"learning" title:@"Learning" symbol:@"graduationcap" key:@"kHideLearning"],
+        [self tab:@"fashion" title:@"Fashion" symbol:@"tshirt" key:@"kHideFashion"],
+        [self tab:@"playlists" title:@"Playlists" symbol:@"music.note.list" key:@"kHidePlaylists"],
+        [self tab:@"history" title:@"History" symbol:@"clock.arrow.circlepath" key:@"kHideHistory"],
+        [self tab:@"notifications" title:@"Notifs" symbol:@"bell" key:@"kHideNotifs"],
+        [self tab:@"watchlater" title:@"WLater" symbol:@"clock" key:@"kHideWatchLater"]
     ];
     self.activeTabs = [NSMutableArray array];
     self.inactiveTabs = [NSMutableArray array];
     for (NSMutableDictionary *tab in defaults) {
-        BOOL initiallyInactive = [@[@"create", @"music", @"live", @"gaming", @"news", @"sports"] containsObject:tab[@"token"]];
+        BOOL initiallyInactive = [@[
+            @"create", @"music", @"live", @"gaming", @"news", @"sports",
+            @"learning", @"fashion", @"playlists", @"history",
+            @"notifications", @"watchlater"
+        ] containsObject:tab[@"token"]];
         id stored = YTKACEPreferenceObject(tab[@"key"]);
         BOOL hidden = [stored respondsToSelector:@selector(boolValue)] ? [stored boolValue] : initiallyInactive;
         YTKACESetPreference(tab[@"key"], hidden);
@@ -95,7 +122,7 @@ static const void *YTKACETabSwitchKey = &YTKACETabSwitchKey;
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     (void)tableView;
-    if (section == 0) return 4;
+    if (section == 0) return 2;
     if (section == 1) return 1;
     if (section == 2) return (NSInteger)self.activeTabs.count;
     return (NSInteger)self.inactiveTabs.count;
@@ -146,8 +173,8 @@ willDisplayHeaderView:(UIView *)view
     cell.indentationWidth = 0.0;
 
     if (indexPath.section == 0) {
-        NSArray *titles = @[@"Hide Tab Labels", @"Shrink Tabs (Smart)", @"Shrink Tabs (Bottom)", @"Prevent Open in Shorts"];
-        NSArray *keys = @[@"kHideTabLabels", @"kEnableTabSShrinkedSmart", @"kEnableTabSShrinkedButtom", @"kEnablePreventOpenInShortsTab"];
+        NSArray *titles = @[@"Hide Tab Labels", @"Prevent Open in Shorts"];
+        NSArray *keys = @[@"kHideTabLabels", @"kEnablePreventOpenInShortsTab"];
         cell.textLabel.text = titles[(NSUInteger)indexPath.row];
         UISwitch *toggle = [UISwitch new];
         toggle.transform = CGAffineTransformMakeScale(0.95, 0.95);
@@ -181,7 +208,7 @@ willDisplayHeaderView:(UIView *)view
         image = YTKACEAssetImage(@"dwn_library_outline_24_pt_3x_Normal",
                                  @"arrow.down.square");
     } else {
-        image = [UIImage systemImageNamed:tab[@"symbol"]];
+        image = YTKACETabEditorIcon(token, tab[@"symbol"]);
     }
     cell.imageView.image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     cell.imageView.tintColor = UIColor.labelColor;
