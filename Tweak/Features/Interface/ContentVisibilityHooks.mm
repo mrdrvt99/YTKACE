@@ -8,127 +8,13 @@
 
 static IMP OriginalDisplayViewDidMove;
 static IMP OriginalDisplayViewSetIdentifier;
-static IMP OriginalDisplaySections;
 static IMP OriginalAddSections;
-static IMP OriginalGridAttributes;
-static IMP OriginalGridItemAttributes;
-static IMP OriginalGridContentSize;
+static IMP OriginalSectionControllers;
 static const void *YTKACEContentHiddenAssociation = &YTKACEContentHiddenAssociation;
-static const void *YTKACEHiddenShelfAssociation = &YTKACEHiddenShelfAssociation;
 static BOOL YTKACEContentContains(NSString *token,
                                   NSArray<NSString *> *needles);
 static id YTKACEContentValue(id object, NSString *key);
 static BOOL YTKACESectionIsShortsShelf(id section);
-
-static BOOL YTKACERegisterHiddenShelf(UIView *view) {
-    if (!YTKACEFeatureEnabled(@"kEnableHideYTShorts") ||
-        ![view.accessibilityIdentifier isEqualToString:@"eml.shorts-shelf"]) {
-        return NO;
-    }
-    UICollectionView *collection = nil;
-    UICollectionViewCell *cell = nil;
-    for (UIView *current = view.superview; current != nil;
-         current = current.superview) {
-        if (cell == nil && [current isKindOfClass:UICollectionViewCell.class]) {
-            cell = (UICollectionViewCell *)current;
-        }
-        if ([current isKindOfClass:UICollectionView.class]) {
-            collection = (UICollectionView *)current;
-            break;
-        }
-    }
-    NSIndexPath *indexPath = cell == nil || collection == nil
-        ? nil : [collection indexPathForCell:cell];
-    if (collection == nil || cell == nil || indexPath == nil) return NO;
-    objc_setAssociatedObject(collection, YTKACEHiddenShelfAssociation, @{
-        @"frame": [NSValue valueWithCGRect:cell.frame],
-        @"path": indexPath
-    }, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [collection.collectionViewLayout invalidateLayout];
-    [collection setNeedsLayout];
-    return YES;
-}
-
-static NSDictionary *YTKACEHiddenShelfInfo(UICollectionViewLayout *layout) {
-    UICollectionView *collection = layout.collectionView;
-    if (!YTKACEFeatureEnabled(@"kEnableHideYTShorts")) {
-        if (collection != nil) {
-            objc_setAssociatedObject(collection,
-                YTKACEHiddenShelfAssociation, nil,
-                OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        return nil;
-    }
-    return collection == nil ? nil : objc_getAssociatedObject(
-        collection, YTKACEHiddenShelfAssociation);
-}
-
-static UICollectionViewLayoutAttributes *YTKACEAdjustedShelfAttribute(
-    UICollectionViewLayoutAttributes *attribute,
-    NSDictionary *info) {
-    if (attribute == nil || info == nil) return attribute;
-    UICollectionViewLayoutAttributes *adjusted = [attribute copy];
-    CGRect shelfFrame = [info[@"frame"] CGRectValue];
-    NSIndexPath *shelfPath = info[@"path"];
-    CGRect frame = adjusted.frame;
-    if (adjusted.representedElementCategory == UICollectionElementCategoryCell &&
-        [adjusted.indexPath isEqual:shelfPath]) {
-        adjusted.alpha = 0.0;
-        frame.size.height = 0.01;
-        adjusted.frame = frame;
-    } else if (CGRectGetMinY(frame) >= CGRectGetMaxY(shelfFrame) - 0.5) {
-        frame.origin.y -= CGRectGetHeight(shelfFrame);
-        adjusted.frame = frame;
-    }
-    return adjusted;
-}
-
-static NSArray *YTKACEGridAttributes(UICollectionViewLayout *receiver,
-                                     SEL selector,
-                                     CGRect rect) {
-    NSDictionary *info = YTKACEHiddenShelfInfo(receiver);
-    CGRect query = rect;
-    if (info != nil) {
-        CGRect shelfFrame = [info[@"frame"] CGRectValue];
-        CGFloat height = CGRectGetHeight(shelfFrame);
-        if (CGRectGetMinY(query) >= CGRectGetMinY(shelfFrame)) {
-            query.origin.y += height;
-        }
-        query.size.height += height;
-    }
-    NSArray *values = OriginalGridAttributes == NULL ? @[]
-        : ((id (*)(id, SEL, CGRect))OriginalGridAttributes)(
-            receiver, selector, query);
-    if (info == nil) return values;
-    NSMutableArray *adjusted = [NSMutableArray arrayWithCapacity:values.count];
-    for (UICollectionViewLayoutAttributes *value in values) {
-        [adjusted addObject:YTKACEAdjustedShelfAttribute(value, info)];
-    }
-    return adjusted;
-}
-
-static UICollectionViewLayoutAttributes *YTKACEGridItemAttributes(
-    UICollectionViewLayout *receiver,
-    SEL selector,
-    NSIndexPath *indexPath) {
-    UICollectionViewLayoutAttributes *value = OriginalGridItemAttributes == NULL
-        ? nil : ((id (*)(id, SEL, id))OriginalGridItemAttributes)(
-            receiver, selector, indexPath);
-    return YTKACEAdjustedShelfAttribute(
-        value, YTKACEHiddenShelfInfo(receiver));
-}
-
-static CGSize YTKACEGridContentSize(UICollectionViewLayout *receiver,
-                                    SEL selector) {
-    CGSize size = OriginalGridContentSize == NULL ? CGSizeZero
-        : ((CGSize (*)(id, SEL))OriginalGridContentSize)(receiver, selector);
-    NSDictionary *info = YTKACEHiddenShelfInfo(receiver);
-    if (info != nil) {
-        size.height = MAX(0.0, size.height -
-            CGRectGetHeight([info[@"frame"] CGRectValue]));
-    }
-    return size;
-}
 
 static id YTKACEContentValue(id object, NSString *key) {
     if (object == nil || key.length == 0) {
@@ -153,7 +39,8 @@ static BOOL YTKACESectionIsShortsShelf(id section) {
         stringByReplacingOccurrencesOfString:@"." withString:@"_"];
     if (YTKACEContentContains(description, @[
         @"shorts_shelf_eml", @"shorts_shelf", @"reel_shelf",
-        @"shorts_lockup_shelf"
+        @"shorts_lockup_shelf", @"shortsshelfrenderer",
+        @"reelshelfrenderer", @"shortslockupviewmodel"
     ])) {
         return YES;
     }
@@ -193,6 +80,13 @@ static NSArray *YTKACEFilteredFeedSections(NSArray *sections) {
     return filtered;
 }
 
+static id YTKACESectionControllers(id receiver, SEL selector,
+                                   NSArray *sections, id reloadMap) {
+    if (OriginalSectionControllers == NULL) return nil;
+    return ((id (*)(id, SEL, id, id))OriginalSectionControllers)(
+        receiver, selector, YTKACEFilteredFeedSections(sections), reloadMap);
+}
+
 static BOOL YTKACEContentContains(NSString *token,
                                   NSArray<NSString *> *needles) {
     for (NSString *needle in needles) {
@@ -220,12 +114,6 @@ static BOOL YTKACEContentShouldHide(UIView *view, BOOL *hideSuperview) {
             @"promoted_video",
             @"companion_ad"
         ])) {
-        return YES;
-    }
-
-    if (YTKACEFeatureEnabled(@"kEnableHideYTShorts") &&
-        ([identifier isEqualToString:@"eml_shorts-shelf"] ||
-         [identifier isEqualToString:@"eml_shorts_shelf"])) {
         return YES;
     }
 
@@ -322,13 +210,6 @@ static BOOL YTKACEContentShouldHide(UIView *view, BOOL *hideSuperview) {
 }
 
 static void YTKACEApplyContentVisibility(UIView *view) {
-    if (!YTKACERegisterHiddenShelf(view) &&
-        [view.accessibilityIdentifier isEqualToString:@"eml.shorts-shelf"]) {
-        __weak UIView *weakView = view;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            YTKACERegisterHiddenShelf(weakView);
-        });
-    }
     BOOL hideSuperview = NO;
     BOOL hidden = YTKACEContentShouldHide(view, &hideSuperview);
     UIView *target = hideSuperview ? view.superview : view;
@@ -379,20 +260,6 @@ static void YTKACEDisplayViewSetIdentifier(UIView *receiver,
     YTKACEApplyContentVisibility(receiver);
 }
 
-static void YTKACEDisplaySections(id receiver, SEL selector, id renderer) {
-    @try {
-        NSArray *sections = YTKACEContentValue(receiver, @"_sectionRenderers");
-        NSArray *filtered = YTKACEFilteredFeedSections(sections);
-        if (filtered != sections) {
-            [receiver setValue:[filtered mutableCopy] forKey:@"_sectionRenderers"];
-        }
-    } @catch (__unused NSException *exception) {
-    }
-    if (OriginalDisplaySections != NULL) {
-        ((void (*)(id, SEL, id))OriginalDisplaySections)(receiver, selector, renderer);
-    }
-}
-
 static void YTKACEAddSections(id receiver, SEL selector, NSArray *sections) {
     if (OriginalAddSections != NULL) {
         ((void (*)(id, SEL, id))OriginalAddSections)(
@@ -410,23 +277,11 @@ void YTKACEInstallContentVisibilityHooks(void) {
                               (IMP)YTKACEDisplayViewSetIdentifier,
                               &OriginalDisplayViewSetIdentifier);
     YTKACEInstallInstanceHook(@"YTInnerTubeCollectionViewController",
-                              @"displaySectionsWithReloadingSectionControllerByRenderer:",
-                              (IMP)YTKACEDisplaySections,
-                              &OriginalDisplaySections);
-    YTKACEInstallInstanceHook(@"YTInnerTubeCollectionViewController",
                               @"addSectionsFromArray:",
                               (IMP)YTKACEAddSections,
                               &OriginalAddSections);
-    YTKACEInstallInstanceHook(@"YTGridCollectionViewFlowLayout",
-                              @"layoutAttributesForElementsInRect:",
-                              (IMP)YTKACEGridAttributes,
-                              &OriginalGridAttributes);
-    YTKACEInstallInstanceHook(@"YTGridCollectionViewFlowLayout",
-                              @"layoutAttributesForItemAtIndexPath:",
-                              (IMP)YTKACEGridItemAttributes,
-                              &OriginalGridItemAttributes);
-    YTKACEInstallInstanceHook(@"YTGridCollectionViewFlowLayout",
-                              @"collectionViewContentSize",
-                              (IMP)YTKACEGridContentSize,
-                              &OriginalGridContentSize);
+    YTKACEInstallInstanceHook(@"YTInnerTubeCollectionViewController",
+                              @"sectionControllersForSectionRenderers:reloadingSectionControllerByRenderer:",
+                              (IMP)YTKACESectionControllers,
+                              &OriginalSectionControllers);
 }

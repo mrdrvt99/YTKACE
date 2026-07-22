@@ -6,6 +6,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <stdlib.h>
 
 static NSString * const YTKACEFixPlaybackKey = @"kEnablefixvideoplayback";
 static NSString * const kNeedsRefetch = @"YTKPlusNeedsRefetch";
@@ -166,9 +167,9 @@ static void H_WatchReset(id r, SEL s, id vc, long st) {
     if (FixOn() && st == 7) return;
     if (OrigWatchReset) ((void (*)(id, SEL, id, long))OrigWatchReset)(r, s, vc, st);
 }
-static void H_WatchResetStart(id r, SEL s, id a, id b, id c, id d, BOOL e) {
+static void H_WatchResetStart(id r, SEL s, BOOL a, id b, id c, id d, BOOL e) {
     if (FixOn()) return;
-    if (OrigWatchResetStart) ((void (*)(id, SEL, id, id, id, id, BOOL))OrigWatchResetStart)(r, s, a, b, c, d, e);
+    if (OrigWatchResetStart) ((void (*)(id, SEL, BOOL, id, id, id, BOOL))OrigWatchResetStart)(r, s, a, b, c, d, e);
 }
 static void H_OverlayReset(id r, SEL s, id vc, long st) {
     if (FixOn() && st == 7) return;
@@ -276,17 +277,17 @@ static void H_HAMQPTrackFail(id r, SEL s, id track, id err) {
 
 static BOOL H_PostponeFmt(id r, SEL s) { return FixOn() ? NO : CallBool(OrigPostponeFmt, r, s); }
 
-static void H_SVStateChanged(id r, SEL s, long from, long to, BOOL init, id seek, long stop) {
+static void H_SVStateChanged(id r, SEL s, long from, long to, BOOL init, long seek, long stop) {
     if (FixOn() && stop == 8) return;
-    if (OrigSVStateChanged) ((void (*)(id, SEL, long, long, BOOL, id, long))OrigSVStateChanged)(r, s, from, to, init, seek, stop);
+    if (OrigSVStateChanged) ((void (*)(id, SEL, long, long, BOOL, long, long))OrigSVStateChanged)(r, s, from, to, init, seek, stop);
 }
 static void H_SVFail(id r, SEL s, id err) {
     if (FixOn()) return;
     if (OrigSVFail) ((void (*)(id, SEL, id))OrigSVFail)(r, s, err);
 }
 
-static void H_LPCRawMedia(id self, SEL sel, id sv, long from, long to, id mp) {
-    if (OrigLPCRawMedia) ((void (*)(id, SEL, id, long, long, id))OrigLPCRawMedia)(self, sel, sv, from, to, mp);
+static void H_LPCRawMedia(id self, SEL sel, id sv, long from, long to, BOOL mp) {
+    if (OrigLPCRawMedia) ((void (*)(id, SEL, id, long, long, BOOL))OrigLPCRawMedia)(self, sel, sv, from, to, mp);
     if (FixOn() && to == 6) {
         __weak id weakSelf = self;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)),
@@ -314,19 +315,74 @@ static void H_LPCRawMedia(id self, SEL sel, id sv, long from, long to, id mp) {
 static void H_YTKPRegisterNotifications(id self, SEL _cmd);
 static void H_YTKPStartProactiveTimer(id self, SEL _cmd);
 
-static void H_LPCLoadTrans(id self, SEL sel, id trans, id cfg, double t) {
+static void FinishLPCLoad(id self) {
+    if (!FixOn()) return;
     gLastRefetchAt = 0.0;
     gIsRefetching = NO;
     [gProactiveTimer invalidate];
     gProactiveTimer = nil;
     gCurrentController = self;
-    if (OrigLPCLoadTrans) ((void (*)(id, SEL, id, id, double))OrigLPCLoadTrans)(self, sel, trans, cfg, t);
     H_YTKPRegisterNotifications(self, NULL);
     H_YTKPStartProactiveTimer(self, NULL);
 }
 
+static void H_LPCLoadTransObject(id self, SEL sel, id trans, id cfg, id initialTime) {
+    if (OrigLPCLoadTrans) {
+        ((void (*)(id, SEL, id, id, id))OrigLPCLoadTrans)(self, sel, trans, cfg, initialTime);
+    }
+    FinishLPCLoad(self);
+}
+
+static void H_LPCLoadTransDouble(id self, SEL sel, id trans, id cfg, double initialTime) {
+    if (OrigLPCLoadTrans) {
+        ((void (*)(id, SEL, id, id, double))OrigLPCLoadTrans)(self, sel, trans, cfg, initialTime);
+    }
+    FinishLPCLoad(self);
+}
+
+static void H_LPCLoadTransInteger(id self, SEL sel, id trans, id cfg, NSInteger initialTime) {
+    if (OrigLPCLoadTrans) {
+        ((void (*)(id, SEL, id, id, NSInteger))OrigLPCLoadTrans)(self, sel, trans, cfg, initialTime);
+    }
+    FinishLPCLoad(self);
+}
+
+static void InstallLPCLoadTransitionHook(void) {
+    Class cls = NSClassFromString(@"YTLocalPlaybackController");
+    SEL sel = NSSelectorFromString(@"loadWithPlayerTransition:playbackConfig:initialTime:");
+    Method method = cls ? class_getInstanceMethod(cls, sel) : NULL;
+    if (!method || method_getNumberOfArguments(method) != 5) return;
+
+    char *argumentType = method_copyArgumentType(method, 4);
+    if (!argumentType) return;
+    const char *type = argumentType;
+    while (*type == 'r' || *type == 'n' || *type == 'N' || *type == 'o' ||
+           *type == 'O' || *type == 'R' || *type == 'V') {
+        type++;
+    }
+
+    IMP replacement = NULL;
+    if (*type == '@' || *type == '#') {
+        replacement = (IMP)H_LPCLoadTransObject;
+    } else if (*type == 'd') {
+        replacement = (IMP)H_LPCLoadTransDouble;
+    } else if (*type == 'q' || *type == 'Q' || *type == 'l' || *type == 'L' ||
+               *type == 'i' || *type == 'I' || *type == 's' || *type == 'S' ||
+               *type == 'c' || *type == 'C' || *type == 'B') {
+        replacement = (IMP)H_LPCLoadTransInteger;
+    }
+    if (replacement) {
+        YTKACEInstallInstanceHook(@"YTLocalPlaybackController",
+                                  @"loadWithPlayerTransition:playbackConfig:initialTime:",
+                                  replacement,
+                                  &OrigLPCLoadTrans);
+    }
+    free(argumentType);
+}
+
 static void H_LPCInitPlayback(id self, SEL sel) {
     if (OrigLPCInitPlayback) ((void (*)(id, SEL))OrigLPCInitPlayback)(self, sel);
+    if (!FixOn()) return;
     gCurrentController = self;
     H_YTKPRegisterNotifications(self, NULL);
     H_YTKPStartProactiveTimer(self, NULL);
@@ -515,6 +571,7 @@ static BOOL H_StreamingWatchEnabled(id r, SEL s)   { return FixOn() ? YES : Call
 static id   H_PlayerRespCacheToken(id r, SEL s)    { return FixOn() ? nil : CallObj(OrigPlayerRespCacheToken, r, s); }
 
 void YTKACEInstallFixPlaybackHooks(void) {
+    if (!FixOn()) return;
 
     InstallBool(@"YTIIosPlayerAttestationConfig", @"iosguardEnable",     (IMP)H_IosguardEnable,    &OrigIosguardEnable);
     InstallBool(@"YTIIosPlayerAttestationConfig", @"hasIosguardEnable",  (IMP)H_HasIosguardEnable, &OrigHasIosguardEnable);
@@ -596,9 +653,7 @@ void YTKACEInstallFixPlaybackHooks(void) {
     YTKACEInstallInstanceHook(@"YTLocalPlaybackController",
         @"singleVideo:rawMediaStateDidChangeFromState:toState:mediaPlayerInitiatedSeek:",
         (IMP)H_LPCRawMedia, &OrigLPCRawMedia);
-    YTKACEInstallInstanceHook(@"YTLocalPlaybackController",
-        @"loadWithPlayerTransition:playbackConfig:initialTime:",
-        (IMP)H_LPCLoadTrans, &OrigLPCLoadTrans);
+    InstallLPCLoadTransitionHook();
     YTKACEInstallInstanceHook(@"YTLocalPlaybackController", @"initializePlayback",
         (IMP)H_LPCInitPlayback, &OrigLPCInitPlayback);
 
@@ -637,4 +692,5 @@ void YTKACEInstallFixPlaybackHooks(void) {
     InstallBool(@"YTPlaybackRequest", @"enablePlayerResponseCacheKeyRelaxation", (IMP)H_CacheKeyRelax,          &OrigCacheKeyRelax);
     InstallBool(@"YTPlaybackRequest", @"streamingWatchEnabled",                  (IMP)H_StreamingWatchEnabled,  &OrigStreamingWatchEnabled);
     InstallObj (@"YTPlaybackRequest", @"playerResponseCacheToken",               (IMP)H_PlayerRespCacheToken,   &OrigPlayerRespCacheToken);
+
 }
