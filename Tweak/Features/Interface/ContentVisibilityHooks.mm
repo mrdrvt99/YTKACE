@@ -3,11 +3,79 @@
 #import "../../Runtime/Preferences.h"
 
 #import <UIKit/UIKit.h>
+#import <objc/message.h>
 #import <objc/runtime.h>
 
 static IMP OriginalDisplayViewDidMove;
 static IMP OriginalDisplayViewSetIdentifier;
+static IMP OriginalDisplaySections;
+static IMP OriginalAddSections;
 static const void *YTKACEContentHiddenAssociation = &YTKACEContentHiddenAssociation;
+static BOOL YTKACEContentContains(NSString *token,
+                                  NSArray<NSString *> *needles);
+
+static id YTKACEContentValue(id object, NSString *key) {
+    if (object == nil || key.length == 0) {
+        return nil;
+    }
+    @try {
+        SEL selector = NSSelectorFromString(key);
+        if ([object respondsToSelector:selector]) {
+            return ((id (*)(id, SEL))objc_msgSend)(object, selector);
+        }
+        return [object valueForKey:key];
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+static BOOL YTKACESectionIsShortsShelf(id section) {
+    if (section == nil) {
+        return NO;
+    }
+    NSString *description = [[[section description] lowercaseString]
+        stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+    if (YTKACEContentContains(description, @[
+        @"shorts_shelf_eml", @"shorts_shelf", @"reel_shelf",
+        @"shorts_lockup_shelf"
+    ])) {
+        return YES;
+    }
+    NSString *className = NSStringFromClass([section class]).lowercaseString;
+    if (![className containsString:@"shelfrenderer"] &&
+        ![className containsString:@"richsectionrenderer"]) {
+        return NO;
+    }
+    id content = YTKACEContentValue(section, @"content");
+    id list = YTKACEContentValue(content, @"horizontalListRenderer") ?:
+        YTKACEContentValue(content, @"richShelfRenderer") ?:
+        content;
+    NSArray *items = YTKACEContentValue(list, @"itemsArray") ?:
+        YTKACEContentValue(list, @"contentsArray");
+    for (id item in items) {
+        NSString *itemDescription = [[item description] lowercaseString];
+        if (YTKACEContentContains(itemDescription, @[
+            @"shorts_video_cell", @"reelitemrenderer", @"shortslockup"
+        ])) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static NSArray *YTKACEFilteredFeedSections(NSArray *sections) {
+    if (!YTKACEFeatureEnabled(@"kEnableHideYTShorts") ||
+        ![sections isKindOfClass:NSArray.class]) {
+        return sections;
+    }
+    NSMutableArray *filtered = [NSMutableArray arrayWithCapacity:sections.count];
+    for (id section in sections) {
+        if (!YTKACESectionIsShortsShelf(section)) {
+            [filtered addObject:section];
+        }
+    }
+    return filtered;
+}
 
 static BOOL YTKACEContentContains(NSString *token,
                                   NSArray<NSString *> *needles) {
@@ -71,10 +139,6 @@ static BOOL YTKACEContentShouldHide(UIView *view, BOOL *hideSuperview) {
         }
         return YES;
     }
-    if (YTKACEFeatureEnabled(@"kEnableHideYTShorts") &&
-        YTKACEContentContains(token, @[@"shorts", @"reel_shelf", @"reelitem"])) {
-        return YES;
-    }
     if (YTKACEFeatureEnabled(@"kEnableNoTopics") &&
         YTKACEContentContains(token, @[@"topic_chip", @"feed_filter", @"chip_cloud"])) {
         return YES;
@@ -113,7 +177,22 @@ static BOOL YTKACEContentShouldHide(UIView *view, BOOL *hideSuperview) {
     }
     if (YTKACEFeatureEnabled(@"kEnableBlockShortsOverlays") &&
         YTKACEContentContains(token, @[
-            @"shorts_pause", @"reel_pause", @"pause_card", @"pausecard"
+            @"shorts_pause", @"reel_pause", @"pause_card", @"pausecard",
+            @"paused_state_carousel", @"reelpausedstatecarousel"
+        ])) {
+        return YES;
+    }
+    if (YTKACEFeatureEnabled(@"kEnableHideShortsProducts") &&
+        YTKACEContentContains(token, @[
+            @"shorts_product", @"product_sticker", @"shopping_carousel",
+            @"shopping_destination", @"tagged_product", @"creator_product"
+        ])) {
+        return YES;
+    }
+    if (YTKACEFeatureEnabled(@"kEnableHideShortsStickerAds") &&
+        YTKACEContentContains(token, @[
+            @"brand_link_sticker", @"product_sticker", @"promoted_sticker",
+            @"sponsored_sticker", @"shorts_ads_shopping"
         ])) {
         return YES;
     }
@@ -171,6 +250,27 @@ static void YTKACEDisplayViewSetIdentifier(UIView *receiver,
     YTKACEApplyContentVisibility(receiver);
 }
 
+static void YTKACEDisplaySections(id receiver, SEL selector, id renderer) {
+    @try {
+        NSArray *sections = YTKACEContentValue(receiver, @"_sectionRenderers");
+        NSArray *filtered = YTKACEFilteredFeedSections(sections);
+        if (filtered != sections) {
+            [receiver setValue:[filtered mutableCopy] forKey:@"_sectionRenderers"];
+        }
+    } @catch (__unused NSException *exception) {
+    }
+    if (OriginalDisplaySections != NULL) {
+        ((void (*)(id, SEL, id))OriginalDisplaySections)(receiver, selector, renderer);
+    }
+}
+
+static void YTKACEAddSections(id receiver, SEL selector, NSArray *sections) {
+    if (OriginalAddSections != NULL) {
+        ((void (*)(id, SEL, id))OriginalAddSections)(
+            receiver, selector, YTKACEFilteredFeedSections(sections));
+    }
+}
+
 void YTKACEInstallContentVisibilityHooks(void) {
     YTKACEInstallInstanceHook(@"_ASDisplayView",
                               @"didMoveToWindow",
@@ -180,4 +280,12 @@ void YTKACEInstallContentVisibilityHooks(void) {
                               @"setAccessibilityIdentifier:",
                               (IMP)YTKACEDisplayViewSetIdentifier,
                               &OriginalDisplayViewSetIdentifier);
+    YTKACEInstallInstanceHook(@"YTInnerTubeCollectionViewController",
+                              @"displaySectionsWithReloadingSectionControllerByRenderer:",
+                              (IMP)YTKACEDisplaySections,
+                              &OriginalDisplaySections);
+    YTKACEInstallInstanceHook(@"YTInnerTubeCollectionViewController",
+                              @"addSectionsFromArray:",
+                              (IMP)YTKACEAddSections,
+                              &OriginalAddSections);
 }

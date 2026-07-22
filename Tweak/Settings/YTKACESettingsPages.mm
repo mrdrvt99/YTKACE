@@ -431,6 +431,11 @@ NSString *YTKACEPickerSummary(NSString *key,
     NSString *_importCategory;
     NSString *_colorKey;
     NSIndexPath *_colorPath;
+    UIView *_backupOverlay;
+    UILabel *_backupOverlayLabel;
+    NSURL *_pendingBackupURL;
+    BOOL _backupRunning;
+    BOOL _restoreRunning;
 }
 
 - (instancetype)initWithTitle:(NSString *)title
@@ -746,18 +751,31 @@ willDisplayHeaderView:(UIView *)view
 - (void)documentPicker:(UIDocumentPickerViewController *)controller
 didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     (void)controller;
+    if (_pickerMode == 3) {
+        if (_pendingBackupURL != nil) {
+            [NSFileManager.defaultManager removeItemAtURL:_pendingBackupURL error:nil];
+        }
+        _pendingBackupURL = nil;
+        _pickerMode = 0;
+        return;
+    }
     if (urls.count == 0) return;
     NSMutableArray<NSURL *> *scoped = [NSMutableArray array];
     for (NSURL *URL in urls) {
         if ([URL startAccessingSecurityScopedResource]) [scoped addObject:URL];
     }
     if (_pickerMode == 1) {
+        _restoreRunning = YES;
+        [self setBackupProgressVisible:YES message:@"Restoring Backup..."];
         [YTKACEBackupManager restoreBackupFromURL:urls.firstObject
             completion:^(NSError *error) {
                 for (NSURL *URL in scoped) [URL stopAccessingSecurityScopedResource];
+                self->_restoreRunning = NO;
+                [self setBackupProgressVisible:NO message:nil];
                 [self showResult:error == nil ? @"Backup Restored" : @"Restore Failed"
                           message:error.localizedDescription];
             }];
+        _pickerMode = 0;
         return;
     }
     NSString *category = _importCategory ?: @"Video";
@@ -784,19 +802,136 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     _colorPath = nil;
 }
 
-- (void)beginBackup {
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    (void)controller;
+    NSInteger mode = _pickerMode;
+    _pickerMode = 0;
+    if (mode == 3) {
+        if (_pendingBackupURL != nil) {
+            [NSFileManager.defaultManager removeItemAtURL:_pendingBackupURL error:nil];
+        }
+        _pendingBackupURL = nil;
+        NSString *message = @"The backup was not saved to the Files app.";
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+                if (!YTKACEShowYouTubeDialog(@"Backup Not Saved", message)) {
+                    YTKACEShowNotice(@"Warning: Backup was not saved to Files app.");
+                }
+            });
+    }
+}
+
+- (void)setBackupProgressVisible:(BOOL)visible message:(NSString *)message {
+    if (!visible) {
+        UIView *overlay = _backupOverlay;
+        _backupOverlay = nil;
+        _backupOverlayLabel = nil;
+        [UIView animateWithDuration:0.18 animations:^{
+            overlay.alpha = 0.0;
+        } completion:^(__unused BOOL finished) {
+            [overlay removeFromSuperview];
+        }];
+        return;
+    }
+    if (_backupOverlay != nil) {
+        _backupOverlayLabel.text = message.length == 0 ? @"Please Wait..." : message;
+        return;
+    }
+    UIView *host = self.navigationController.view ?: self.view;
+    UIView *overlay = [UIView new];
+    overlay.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.18];
+    overlay.translatesAutoresizingMaskIntoConstraints = NO;
+    overlay.alpha = 0.0;
+
+    UIView *card = [UIView new];
+    card.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.96];
+    card.layer.cornerRadius = 12.0;
+    card.layer.masksToBounds = YES;
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc]
+        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    spinner.color = UIColor.whiteColor;
+    spinner.translatesAutoresizingMaskIntoConstraints = NO;
+    [spinner startAnimating];
+
+    UILabel *label = [UILabel new];
+    label.text = message.length == 0 ? @"Please Wait..." : message;
+    label.textColor = UIColor.whiteColor;
+    label.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
+    label.textAlignment = NSTextAlignmentCenter;
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+
+    [card addSubview:spinner];
+    [card addSubview:label];
+    [overlay addSubview:card];
+    [host addSubview:overlay];
+    [NSLayoutConstraint activateConstraints:@[
+        [overlay.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
+        [overlay.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
+        [overlay.topAnchor constraintEqualToAnchor:host.topAnchor],
+        [overlay.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
+        [card.centerXAnchor constraintEqualToAnchor:overlay.centerXAnchor],
+        [card.centerYAnchor constraintEqualToAnchor:overlay.centerYAnchor],
+        [card.widthAnchor constraintEqualToConstant:190.0],
+        [card.heightAnchor constraintEqualToConstant:94.0],
+        [spinner.centerXAnchor constraintEqualToAnchor:card.centerXAnchor],
+        [spinner.topAnchor constraintEqualToAnchor:card.topAnchor constant:17.0],
+        [label.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:12.0],
+        [label.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-12.0],
+        [label.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-17.0]
+    ]];
+    _backupOverlay = overlay;
+    _backupOverlayLabel = label;
+    [UIView animateWithDuration:0.18 animations:^{ overlay.alpha = 1.0; }];
+}
+
+- (void)performBackup {
+    if (_backupRunning) return;
+    _backupRunning = YES;
+    [self setBackupProgressVisible:YES message:@"Preparing Backup..."];
+    __weak YTKACEOptionsController *weakSelf = self;
     [YTKACEBackupManager createBackupWithCompletion:^(NSURL *URL, NSError *error) {
+        YTKACEOptionsController *controller = weakSelf;
+        if (controller == nil) return;
+        controller->_backupRunning = NO;
+        [controller setBackupProgressVisible:NO message:nil];
         if (URL == nil || error != nil) {
-            [self showResult:@"Backup Failed" message:error.localizedDescription];
+            NSString *message = error.localizedDescription ?: @"The backup could not be created.";
+            if (!YTKACEShowYouTubeDialog(@"Backup Failed", message)) {
+                [controller showResult:@"Backup Failed" message:message];
+            }
             return;
         }
         UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
             initForExportingURLs:@[URL] asCopy:YES];
-        [self presentViewController:picker animated:YES completion:nil];
+        controller->_pickerMode = 3;
+        controller->_pendingBackupURL = URL;
+        picker.delegate = controller;
+        [controller presentViewController:picker animated:YES completion:nil];
     }];
 }
 
+- (void)beginBackup {
+    if (_backupRunning) return;
+    __weak YTKACEOptionsController *weakSelf = self;
+    BOOL shown = YTKACEShowYouTubeConfirmation(
+        @"YTKACE",
+        @"Do you want to create a backup?",
+        @"Create",
+        ^{
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf performBackup];
+            });
+        }
+    );
+    if (!shown) {
+        YTKACEShowNotice(@"Backup confirmation unavailable");
+    }
+}
+
 - (void)beginRestore {
+    if (_restoreRunning) return;
     _pickerMode = 1;
     UTType *zip = [UTType typeWithFilenameExtension:@"zip"] ?: UTTypeData;
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
@@ -1032,7 +1167,9 @@ UIViewController *YTKACEMakeShortsOptionsController(void) {
         ],
         @[
             YTKACEToggle(@"Hide Shorts from Feed", @"kEnableHideYTShorts", @"", @""),
-            YTKACEToggle(@"Hide Pause Card", @"kEnableBlockShortsOverlays", @"", @"")
+            YTKACEToggle(@"Hide Pause Card", @"kEnableBlockShortsOverlays", @"", @""),
+            YTKACEToggle(@"Hide Product Recommendations", @"kEnableHideShortsProducts", @"", @""),
+            YTKACEToggle(@"Hide Sticker Ads", @"kEnableHideShortsStickerAds", @"", @"")
         ]
     ], @[@"SHORTS", @"HIDE ELEMENTS"]);
 }

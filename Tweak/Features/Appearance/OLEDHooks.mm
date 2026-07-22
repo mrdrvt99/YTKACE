@@ -7,6 +7,8 @@
 
 static NSMutableDictionary<NSString *, NSValue *> *YTKACEOLEDOriginals;
 static IMP OriginalQualitySheetDidAppear;
+static IMP OriginalAppTraitChanged;
+static IMP OriginalAppStatusBarStyle;
 
 static NSValue *YTKACEOLEDValue(IMP implementation) {
     return [NSValue value:&implementation withObjCType:@encode(IMP)];
@@ -28,18 +30,66 @@ static NSString *YTKACEOLEDOriginalKey(id receiver, SEL selector) {
 }
 
 static UIColor *YTKACEOLEDColor(id receiver, SEL selector) {
-    UITraitCollection *traits = [receiver respondsToSelector:@selector(traitCollection)]
-        ? [receiver traitCollection]
-        : nil;
-    if (YTKACEOLEDActive(traits)) {
-        return UIColor.blackColor;
-    }
     IMP original = YTKACEOLEDImplementation(
         YTKACEOLEDOriginals[YTKACEOLEDOriginalKey(receiver, selector)]
     );
-    return original == NULL
+    UIColor *base = original == NULL
         ? nil
         : ((id (*)(id, SEL))original)(receiver, selector);
+    if (!YTKACEFeatureEnabled(YTKACEOLEDKey)) return base;
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        return YTKACEOLEDActive(traits)
+            ? UIColor.blackColor
+            : (base == nil ? UIColor.systemBackgroundColor
+                           : [base resolvedColorWithTraitCollection:traits]);
+    }];
+}
+
+static void YTKACERefreshStatusBars(UIViewController *controller) {
+    if (controller == nil) return;
+    [controller setNeedsStatusBarAppearanceUpdate];
+    if ([controller isKindOfClass:UINavigationController.class]) {
+        YTKACERefreshStatusBars(((UINavigationController *)controller).visibleViewController);
+    } else if ([controller isKindOfClass:UITabBarController.class]) {
+        YTKACERefreshStatusBars(((UITabBarController *)controller).selectedViewController);
+    }
+    YTKACERefreshStatusBars(controller.presentedViewController);
+}
+
+static NSInteger YTKACEAppStatusBarStyle(UIViewController *receiver,
+                                         SEL selector) {
+    NSInteger original = OriginalAppStatusBarStyle == NULL
+        ? UIStatusBarStyleDefault
+        : ((NSInteger (*)(id, SEL))OriginalAppStatusBarStyle)(receiver, selector);
+    if (!YTKACEFeatureEnabled(YTKACEOLEDKey)) return original;
+    UIUserInterfaceStyle style = receiver.traitCollection.userInterfaceStyle;
+    NSInteger result = style == UIUserInterfaceStyleDark
+        ? UIStatusBarStyleLightContent
+        : UIStatusBarStyleDarkContent;
+    return result;
+}
+
+static void YTKACEAppTraitChanged(UIViewController *receiver,
+                                  SEL selector,
+                                  UITraitCollection *previous) {
+    if (OriginalAppTraitChanged != NULL) {
+        ((void (*)(id, SEL, id))OriginalAppTraitChanged)(receiver, selector, previous);
+    }
+    if (previous != nil &&
+        ![receiver.traitCollection
+            hasDifferentColorAppearanceComparedToTraitCollection:previous]) return;
+    [receiver setNeedsStatusBarAppearanceUpdate];
+    [receiver.view setNeedsLayout];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class] ||
+                scene.activationState != UISceneActivationStateForegroundActive) continue;
+            for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+                YTKACERefreshStatusBars(window.rootViewController);
+                [window setNeedsLayout];
+            }
+        }
+    });
 }
 
 static void YTKACEInstallColorHook(NSString *className,
@@ -193,5 +243,13 @@ void YTKACEInstallOLEDHooks(void) {
                               @"viewDidAppear:",
                               (IMP)YTKACEQualitySheetDidAppear,
                               &OriginalQualitySheetDidAppear);
+    YTKACEInstallInstanceHook(@"YTAppViewController",
+                              @"traitCollectionDidChange:",
+                              (IMP)YTKACEAppTraitChanged,
+                              &OriginalAppTraitChanged);
+    YTKACEInstallInstanceHook(@"YTAppViewController",
+                              @"preferredStatusBarStyle",
+                              (IMP)YTKACEAppStatusBarStyle,
+                              &OriginalAppStatusBarStyle);
 
 }

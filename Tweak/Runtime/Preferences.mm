@@ -75,6 +75,12 @@ void YTKACERegisterDefaults(void) {
         @"kHideGaming": @YES,
         @"kHideNews": @YES,
         @"kHideSports": @YES,
+        @"kHideLearning": @YES,
+        @"kHideFashion": @YES,
+        @"kHidePlaylists": @YES,
+        @"kHideHistory": @YES,
+        @"kHideNotifs": @YES,
+        @"kHideWatchLater": @YES,
         @"kTabOrder": @[@"home", @"shorts", @"subscriptions", @"library", @"ytkace"]
     }];
     [YTKACEDefaults() setBool:YES forKey:YTKACEMasterEnabledKey];

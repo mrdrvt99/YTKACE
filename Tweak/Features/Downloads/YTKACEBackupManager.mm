@@ -10,6 +10,35 @@ static NSError *YTKACEBackupError(NSInteger code, NSString *message) {
         userInfo:@{NSLocalizedDescriptionKey: message ?: @"Backup failed"}];
 }
 
+static NSError *YTKACEBackupException(NSException *exception) {
+    NSString *message = exception.reason.length != 0
+        ? exception.reason : @"The backup file could not be written";
+    return YTKACEBackupError(13, message);
+}
+
+static NSData *YTKACEReadData(NSFileHandle *handle,
+                              NSUInteger length,
+                              NSError **error) {
+    @try {
+        return [handle readDataOfLength:length];
+    } @catch (NSException *exception) {
+        if (error != NULL) *error = YTKACEBackupException(exception);
+        return nil;
+    }
+}
+
+static BOOL YTKACEWriteData(NSFileHandle *handle,
+                            NSData *data,
+                            NSError **error) {
+    @try {
+        [handle writeData:data];
+        return YES;
+    } @catch (NSException *exception) {
+        if (error != NULL) *error = YTKACEBackupException(exception);
+        return NO;
+    }
+}
+
 static void YTKACEAppend16(NSMutableData *data, uint16_t value) {
     uint8_t bytes[] = {(uint8_t)value, (uint8_t)(value >> 8)};
     [data appendBytes:bytes length:sizeof(bytes)];
@@ -23,6 +52,16 @@ static void YTKACEAppend32(NSMutableData *data, uint32_t value) {
     [data appendBytes:bytes length:sizeof(bytes)];
 }
 
+static void YTKACEAppend64(NSMutableData *data, uint64_t value) {
+    uint8_t bytes[] = {
+        (uint8_t)value, (uint8_t)(value >> 8),
+        (uint8_t)(value >> 16), (uint8_t)(value >> 24),
+        (uint8_t)(value >> 32), (uint8_t)(value >> 40),
+        (uint8_t)(value >> 48), (uint8_t)(value >> 56)
+    };
+    [data appendBytes:bytes length:sizeof(bytes)];
+}
+
 static uint16_t YTKACERead16(const uint8_t *bytes) {
     return (uint16_t)(bytes[0] | (bytes[1] << 8));
 }
@@ -30,6 +69,11 @@ static uint16_t YTKACERead16(const uint8_t *bytes) {
 static uint32_t YTKACERead32(const uint8_t *bytes) {
     return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
         ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+}
+
+static uint64_t YTKACERead64(const uint8_t *bytes) {
+    return (uint64_t)YTKACERead32(bytes) |
+        ((uint64_t)YTKACERead32(bytes + 4) << 32);
 }
 
 static NSString *YTKACERelativePath(NSURL *URL, NSURL *baseURL) {
@@ -73,24 +117,23 @@ static void YTKACEApplyBackupSettings(NSDictionary *settings) {
     [defaults synchronize];
 }
 
-static uint32_t YTKACECRCAndSize(NSURL *URL, uint32_t *size, NSError **error) {
+static uint32_t YTKACECRCAndSize(NSURL *URL, uint64_t *size, NSError **error) {
     NSFileHandle *handle = [NSFileHandle fileHandleForReadingFromURL:URL error:error];
     if (handle == nil) return 0;
     uLong crc = crc32(0L, Z_NULL, 0);
     uint64_t total = 0;
     while (true) {
-        NSData *chunk = [handle readDataOfLength:1024 * 1024];
-        if (chunk.length == 0) break;
-        crc = crc32(crc, (const Bytef *)chunk.bytes, (uInt)chunk.length);
-        total += chunk.length;
-        if (total > UINT32_MAX) {
-            if (error != NULL) *error = YTKACEBackupError(2, @"A backup file is larger than 4 GB");
-            [handle closeFile];
-            return 0;
+        @autoreleasepool {
+            NSData *chunk = YTKACEReadData(handle, 4 * 1024 * 1024, error);
+            if (chunk == nil || chunk.length == 0) break;
+            crc = crc32(crc, (const Bytef *)chunk.bytes, (uInt)chunk.length);
+            total += chunk.length;
         }
+        if (error != NULL && *error != nil) break;
     }
     [handle closeFile];
-    *size = (uint32_t)total;
+    if (error != NULL && *error != nil) return 0;
+    *size = total;
     return (uint32_t)crc;
 }
 
@@ -98,12 +141,15 @@ static BOOL YTKACECopyFileToHandle(NSURL *URL, NSFileHandle *output, NSError **e
     NSFileHandle *input = [NSFileHandle fileHandleForReadingFromURL:URL error:error];
     if (input == nil) return NO;
     while (true) {
-        NSData *chunk = [input readDataOfLength:1024 * 1024];
-        if (chunk.length == 0) break;
-        [output writeData:chunk];
+        @autoreleasepool {
+            NSData *chunk = YTKACEReadData(input, 4 * 1024 * 1024, error);
+            if (chunk == nil || chunk.length == 0) break;
+            if (!YTKACEWriteData(output, chunk, error)) break;
+        }
+        if (error != NULL && *error != nil) break;
     }
     [input closeFile];
-    return YES;
+    return error == NULL || *error == nil;
 }
 
 static BOOL YTKACEWriteZip(NSURL *outputURL,
@@ -123,83 +169,170 @@ static BOOL YTKACEWriteZip(NSURL *outputURL,
             [output closeFile];
             return NO;
         }
-        uint32_t size = 0;
+        uint64_t size = 0;
         uint32_t crc = YTKACECRCAndSize(URL, &size, error);
         if (error != NULL && *error != nil) {
             [output closeFile];
             return NO;
         }
         uint64_t offset64 = output.offsetInFile;
-        if (offset64 > UINT32_MAX) {
-            if (error != NULL) *error = YTKACEBackupError(4, @"The backup is too large");
-            [output closeFile];
-            return NO;
+        BOOL largeFile = size >= UINT32_MAX;
+        NSMutableData *extra = [NSMutableData data];
+        if (largeFile) {
+            YTKACEAppend16(extra, 0x0001);
+            YTKACEAppend16(extra, 16);
+            YTKACEAppend64(extra, size);
+            YTKACEAppend64(extra, size);
         }
         NSMutableData *header = [NSMutableData data];
         YTKACEAppend32(header, 0x04034b50);
-        YTKACEAppend16(header, 20);
+        YTKACEAppend16(header, largeFile ? 45 : 20);
         YTKACEAppend16(header, 0x0800);
         YTKACEAppend16(header, 0);
         YTKACEAppend16(header, 0);
         YTKACEAppend16(header, 0);
         YTKACEAppend32(header, crc);
-        YTKACEAppend32(header, size);
-        YTKACEAppend32(header, size);
+        YTKACEAppend32(header, largeFile ? UINT32_MAX : (uint32_t)size);
+        YTKACEAppend32(header, largeFile ? UINT32_MAX : (uint32_t)size);
         YTKACEAppend16(header, (uint16_t)name.length);
-        YTKACEAppend16(header, 0);
+        YTKACEAppend16(header, (uint16_t)extra.length);
         [header appendData:name];
-        [output writeData:header];
+        [header appendData:extra];
+        if (!YTKACEWriteData(output, header, error)) {
+            [output closeFile];
+            return NO;
+        }
         if (!YTKACECopyFileToHandle(URL, output, error)) {
             [output closeFile];
             return NO;
         }
         [central addObject:@{
             @"name": name, @"crc": @(crc), @"size": @(size),
-            @"offset": @((uint32_t)offset64)
+            @"offset": @(offset64)
         }];
     }
-    if (central.count > UINT16_MAX) {
-        if (error != NULL) *error = YTKACEBackupError(5, @"The backup has too many files");
-        [output closeFile];
-        return NO;
-    }
-    uint32_t centralOffset = (uint32_t)output.offsetInFile;
+    uint64_t centralOffset = output.offsetInFile;
+    BOOL needsZip64 = central.count >= UINT16_MAX || centralOffset >= UINT32_MAX;
     for (NSDictionary *entry in central) {
         NSData *name = entry[@"name"];
+        uint64_t size = [entry[@"size"] unsignedLongLongValue];
+        uint64_t offset = [entry[@"offset"] unsignedLongLongValue];
+        BOOL largeFile = size >= UINT32_MAX;
+        BOOL largeOffset = offset >= UINT32_MAX;
+        BOOL largeEntry = largeFile || largeOffset;
+        needsZip64 = needsZip64 || largeEntry;
+        NSMutableData *extra = [NSMutableData data];
+        if (largeEntry) {
+            NSMutableData *values = [NSMutableData data];
+            if (largeFile) {
+                YTKACEAppend64(values, size);
+                YTKACEAppend64(values, size);
+            }
+            if (largeOffset) YTKACEAppend64(values, offset);
+            YTKACEAppend16(extra, 0x0001);
+            YTKACEAppend16(extra, (uint16_t)values.length);
+            [extra appendData:values];
+        }
         NSMutableData *record = [NSMutableData data];
         YTKACEAppend32(record, 0x02014b50);
-        YTKACEAppend16(record, 20);
-        YTKACEAppend16(record, 20);
+        YTKACEAppend16(record, largeEntry ? 45 : 20);
+        YTKACEAppend16(record, largeEntry ? 45 : 20);
         YTKACEAppend16(record, 0x0800);
         YTKACEAppend16(record, 0);
         YTKACEAppend16(record, 0);
         YTKACEAppend16(record, 0);
         YTKACEAppend32(record, [entry[@"crc"] unsignedIntValue]);
-        YTKACEAppend32(record, [entry[@"size"] unsignedIntValue]);
-        YTKACEAppend32(record, [entry[@"size"] unsignedIntValue]);
+        YTKACEAppend32(record, largeFile ? UINT32_MAX : (uint32_t)size);
+        YTKACEAppend32(record, largeFile ? UINT32_MAX : (uint32_t)size);
         YTKACEAppend16(record, (uint16_t)name.length);
-        YTKACEAppend16(record, 0);
+        YTKACEAppend16(record, (uint16_t)extra.length);
         YTKACEAppend16(record, 0);
         YTKACEAppend16(record, 0);
         YTKACEAppend16(record, 0);
         YTKACEAppend32(record, 0);
-        YTKACEAppend32(record, [entry[@"offset"] unsignedIntValue]);
+        YTKACEAppend32(record, largeOffset ? UINT32_MAX : (uint32_t)offset);
         [record appendData:name];
-        [output writeData:record];
+        [record appendData:extra];
+        if (!YTKACEWriteData(output, record, error)) {
+            [output closeFile];
+            return NO;
+        }
     }
-    uint32_t centralSize = (uint32_t)output.offsetInFile - centralOffset;
+    uint64_t centralSize = output.offsetInFile - centralOffset;
+    needsZip64 = needsZip64 || centralSize >= UINT32_MAX;
+    if (needsZip64) {
+        uint64_t zip64Offset = output.offsetInFile;
+        NSMutableData *zip64 = [NSMutableData data];
+        YTKACEAppend32(zip64, 0x06064b50);
+        YTKACEAppend64(zip64, 44);
+        YTKACEAppend16(zip64, 45);
+        YTKACEAppend16(zip64, 45);
+        YTKACEAppend32(zip64, 0);
+        YTKACEAppend32(zip64, 0);
+        YTKACEAppend64(zip64, central.count);
+        YTKACEAppend64(zip64, central.count);
+        YTKACEAppend64(zip64, centralSize);
+        YTKACEAppend64(zip64, centralOffset);
+        if (!YTKACEWriteData(output, zip64, error)) {
+            [output closeFile];
+            return NO;
+        }
+        NSMutableData *locator = [NSMutableData data];
+        YTKACEAppend32(locator, 0x07064b50);
+        YTKACEAppend32(locator, 0);
+        YTKACEAppend64(locator, zip64Offset);
+        YTKACEAppend32(locator, 1);
+        if (!YTKACEWriteData(output, locator, error)) {
+            [output closeFile];
+            return NO;
+        }
+    }
     NSMutableData *end = [NSMutableData data];
     YTKACEAppend32(end, 0x06054b50);
     YTKACEAppend16(end, 0);
     YTKACEAppend16(end, 0);
-    YTKACEAppend16(end, (uint16_t)central.count);
-    YTKACEAppend16(end, (uint16_t)central.count);
-    YTKACEAppend32(end, centralSize);
-    YTKACEAppend32(end, centralOffset);
+    YTKACEAppend16(end, needsZip64 ? UINT16_MAX : (uint16_t)central.count);
+    YTKACEAppend16(end, needsZip64 ? UINT16_MAX : (uint16_t)central.count);
+    YTKACEAppend32(end, needsZip64 ? UINT32_MAX : (uint32_t)centralSize);
+    YTKACEAppend32(end, needsZip64 ? UINT32_MAX : (uint32_t)centralOffset);
     YTKACEAppend16(end, 0);
-    [output writeData:end];
+    if (!YTKACEWriteData(output, end, error)) {
+        [output closeFile];
+        return NO;
+    }
     [output closeFile];
     return YES;
+}
+
+static uint64_t YTKACEBackupSize(NSArray<NSDictionary *> *entries) {
+    uint64_t total = 0;
+    for (NSDictionary *entry in entries) {
+        @autoreleasepool {
+            NSNumber *size = nil;
+            [entry[@"url"] getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
+            uint64_t value = size.unsignedLongLongValue;
+            if (UINT64_MAX - total < value) return UINT64_MAX;
+            total += value;
+        }
+    }
+    return total;
+}
+
+static BOOL YTKACEHasBackupSpace(NSURL *URL,
+                                 uint64_t required,
+                                 NSError **error) {
+    NSNumber *available = nil;
+    [URL getResourceValue:&available
+                   forKey:NSURLVolumeAvailableCapacityForImportantUsageKey
+                    error:nil];
+    if (available == nil) return YES;
+    uint64_t reserve = 128ULL * 1024ULL * 1024ULL;
+    if (required <= UINT64_MAX - reserve &&
+        available.unsignedLongLongValue >= required + reserve) return YES;
+    if (error != NULL) {
+        *error = YTKACEBackupError(14, @"Not enough free space to create the backup");
+    }
+    return NO;
 }
 
 static NSArray<NSDictionary *> *YTKACEBackupEntries(NSError **error) {
@@ -255,18 +388,73 @@ static BOOL YTKACEExtractStoredZip(NSURL *URL, NSURL *destination, NSError **err
         uint16_t flags = YTKACERead16(bytes + 6);
         uint16_t method = YTKACERead16(bytes + 8);
         uint32_t expectedCRC = YTKACERead32(bytes + 14);
-        uint32_t compressedSize = YTKACERead32(bytes + 18);
-        uint32_t size = YTKACERead32(bytes + 22);
+        uint32_t compressedSize32 = YTKACERead32(bytes + 18);
+        uint32_t size32 = YTKACERead32(bytes + 22);
         uint16_t nameLength = YTKACERead16(bytes + 26);
         uint16_t extraLength = YTKACERead16(bytes + 28);
-        if ((flags & 0x0008) != 0 || method != 0 || compressedSize != size) {
+        if ((flags & 0x0008) != 0 || method != 0) {
             if (error != NULL) *error = YTKACEBackupError(9, @"Unsupported ZIP compression");
             [input closeFile];
             return NO;
         }
-        NSData *nameData = [input readDataOfLength:nameLength];
+        NSData *nameData = YTKACEReadData(input, nameLength, error);
+        if (nameData == nil || nameData.length != nameLength) {
+            if (error != NULL && *error == nil) {
+                *error = YTKACEBackupError(11, @"The backup is incomplete");
+            }
+            [input closeFile];
+            return NO;
+        }
         NSString *name = [[NSString alloc] initWithData:nameData encoding:NSUTF8StringEncoding];
-        if (extraLength != 0) [input readDataOfLength:extraLength];
+        NSData *extra = extraLength == 0 ? NSData.data :
+            YTKACEReadData(input, extraLength, error);
+        if (extra == nil || extra.length != extraLength) {
+            if (error != NULL && *error == nil) {
+                *error = YTKACEBackupError(11, @"The backup is incomplete");
+            }
+            [input closeFile];
+            return NO;
+        }
+        uint64_t compressedSize = compressedSize32;
+        uint64_t size = size32;
+        if (compressedSize32 == UINT32_MAX || size32 == UINT32_MAX) {
+            const uint8_t *extraBytes = (const uint8_t *)extra.bytes;
+            NSUInteger cursor = 0;
+            BOOL parsedSize = size32 != UINT32_MAX;
+            BOOL parsedCompressedSize = compressedSize32 != UINT32_MAX;
+            while (cursor + 4 <= extra.length) {
+                uint16_t identifier = YTKACERead16(extraBytes + cursor);
+                uint16_t length = YTKACERead16(extraBytes + cursor + 2);
+                cursor += 4;
+                if (cursor + length > extra.length) break;
+                if (identifier == 0x0001) {
+                    NSUInteger valueCursor = cursor;
+                    if (size32 == UINT32_MAX && valueCursor + 8 <= cursor + length) {
+                        size = YTKACERead64(extraBytes + valueCursor);
+                        valueCursor += 8;
+                        parsedSize = YES;
+                    }
+                    if (compressedSize32 == UINT32_MAX &&
+                        valueCursor + 8 <= cursor + length) {
+                        compressedSize = YTKACERead64(extraBytes + valueCursor);
+                        valueCursor += 8;
+                        parsedCompressedSize = YES;
+                    }
+                    break;
+                }
+                cursor += length;
+            }
+            if (!parsedSize || !parsedCompressedSize) {
+                if (error != NULL) *error = YTKACEBackupError(9, @"Invalid ZIP64 backup");
+                [input closeFile];
+                return NO;
+            }
+        }
+        if (compressedSize != size) {
+            if (error != NULL) *error = YTKACEBackupError(9, @"Unsupported ZIP compression");
+            [input closeFile];
+            return NO;
+        }
         NSString *clean = name.stringByStandardizingPath;
         BOOL allowed = [clean isEqualToString:@"SettingsBackup.plist"] ||
             [clean hasPrefix:@"Downloads/"];
@@ -285,20 +473,28 @@ static BOOL YTKACEExtractStoredZip(NSURL *URL, NSURL *destination, NSError **err
             [input closeFile];
             return NO;
         }
-        uint32_t remaining = size;
+        uint64_t remaining = size;
         uLong crc = crc32(0L, Z_NULL, 0);
         while (remaining != 0) {
-            NSUInteger amount = MIN((uint32_t)(1024 * 1024), remaining);
-            NSData *chunk = [input readDataOfLength:amount];
-            if (chunk.length != amount) {
-                [output closeFile];
-                [input closeFile];
-                if (error != NULL) *error = YTKACEBackupError(11, @"The backup is incomplete");
-                return NO;
+            @autoreleasepool {
+                NSUInteger amount = (NSUInteger)MIN((uint64_t)(1024 * 1024), remaining);
+                NSData *chunk = YTKACEReadData(input, amount, error);
+                if (chunk.length != amount) {
+                    [output closeFile];
+                    [input closeFile];
+                    if (error != NULL && *error == nil) {
+                        *error = YTKACEBackupError(11, @"The backup is incomplete");
+                    }
+                    return NO;
+                }
+                if (!YTKACEWriteData(output, chunk, error)) {
+                    [output closeFile];
+                    [input closeFile];
+                    return NO;
+                }
+                crc = crc32(crc, (const Bytef *)chunk.bytes, (uInt)chunk.length);
+                remaining -= chunk.length;
             }
-            [output writeData:chunk];
-            crc = crc32(crc, (const Bytef *)chunk.bytes, (uInt)chunk.length);
-            remaining -= (uint32_t)chunk.length;
         }
         [output closeFile];
         if ((uint32_t)crc != expectedCRC) {
@@ -350,19 +546,39 @@ static void YTKACERestoreDownloads(NSURL *source, NSURL *destination) {
 
 + (void)createBackupWithCompletion:(YTKACEBackupCreationCompletion)completion {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        NSError *error = nil;
-        NSURL *root = YTKACEApplicationSupportDirectory();
-        NSURL *backups = [root URLByAppendingPathComponent:@"Backups" isDirectory:YES];
-        [NSFileManager.defaultManager createDirectoryAtURL:backups
-          withIntermediateDirectories:YES attributes:nil error:nil];
-        NSDateFormatter *formatter = [NSDateFormatter new];
-        formatter.dateFormat = @"yyyyMMdd-HHmmss";
-        NSString *name = [NSString stringWithFormat:@"YTKACE-Backup-%@.zip",
-            [formatter stringFromDate:NSDate.date]];
-        NSURL *URL = [backups URLByAppendingPathComponent:name];
-        NSArray *entries = YTKACEBackupEntries(&error);
-        if (entries != nil && !YTKACEWriteZip(URL, entries, &error)) URL = nil;
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(URL, error); });
+        @autoreleasepool {
+            NSError *error = nil;
+            NSFileManager *manager = NSFileManager.defaultManager;
+            NSURL *URL = nil;
+            @try {
+                NSURL *backups = [[NSURL fileURLWithPath:NSTemporaryDirectory()
+                                              isDirectory:YES]
+                    URLByAppendingPathComponent:@"YTKACEBackups" isDirectory:YES];
+                [manager removeItemAtURL:backups error:nil];
+                [manager createDirectoryAtURL:backups
+                  withIntermediateDirectories:YES attributes:nil error:&error];
+                NSDateFormatter *formatter = [NSDateFormatter new];
+                formatter.dateFormat = @"yyyyMMdd-HHmmss";
+                NSString *name = [NSString stringWithFormat:@"YTKACE-Backup-%@.zip",
+                    [formatter stringFromDate:NSDate.date]];
+                URL = error == nil ? [backups URLByAppendingPathComponent:name] : nil;
+                NSArray *entries = error == nil ? YTKACEBackupEntries(&error) : nil;
+                uint64_t size = entries == nil ? 0 : YTKACEBackupSize(entries);
+                if (entries != nil && !YTKACEHasBackupSpace(backups, size, &error)) {
+                    entries = nil;
+                }
+                if (entries != nil && !YTKACEWriteZip(URL, entries, &error)) {
+                    [manager removeItemAtURL:URL error:nil];
+                    URL = nil;
+                }
+            } @catch (NSException *exception) {
+                error = YTKACEBackupException(exception);
+                if (URL != nil) [manager removeItemAtURL:URL error:nil];
+                URL = nil;
+            }
+            if (error != nil) URL = nil;
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(URL, error); });
+        }
     });
 }
 

@@ -30,40 +30,8 @@ static UIImage *YTKACETemplateImage(NSString *asset, NSString *symbol) {
 }
 
 static UIImage *YTKACESponsorIcon(void) {
-    UIGraphicsImageRenderer *renderer =
-        [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(24.0, 24.0)];
-    UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
-        CGContextRef graphics = context.CGContext;
-        CGContextSetStrokeColorWithColor(graphics, UIColor.blackColor.CGColor);
-        CGContextSetFillColorWithColor(graphics, UIColor.blackColor.CGColor);
-        CGContextSetLineWidth(graphics, 1.8);
-        CGContextSetLineJoin(graphics, kCGLineJoinRound);
-        UIBezierPath *shield = [UIBezierPath bezierPath];
-        [shield moveToPoint:CGPointMake(12.0, 1.8)];
-        [shield addCurveToPoint:CGPointMake(21.0, 5.2)
-                  controlPoint1:CGPointMake(15.0, 2.4)
-                  controlPoint2:CGPointMake(18.0, 3.2)];
-        [shield addLineToPoint:CGPointMake(20.2, 13.5)];
-        [shield addCurveToPoint:CGPointMake(12.0, 22.0)
-                  controlPoint1:CGPointMake(19.6, 17.2)
-                  controlPoint2:CGPointMake(16.5, 20.2)];
-        [shield addCurveToPoint:CGPointMake(3.8, 13.5)
-                  controlPoint1:CGPointMake(7.5, 20.2)
-                  controlPoint2:CGPointMake(4.4, 17.2)];
-        [shield addLineToPoint:CGPointMake(3.0, 5.2)];
-        [shield addCurveToPoint:CGPointMake(12.0, 1.8)
-                  controlPoint1:CGPointMake(6.0, 3.2)
-                  controlPoint2:CGPointMake(9.0, 2.4)];
-        [shield closePath];
-        [shield stroke];
-        UIBezierPath *play = [UIBezierPath bezierPath];
-        [play moveToPoint:CGPointMake(9.2, 7.5)];
-        [play addLineToPoint:CGPointMake(17.0, 12.0)];
-        [play addLineToPoint:CGPointMake(9.2, 16.5)];
-        [play closePath];
-        [play fill];
-    }];
-    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    return YTKACETemplateImage(@"sponsorblock_shield_template",
+                               @"play.shield");
 }
 
 void YTKACEApplyAppearance(UIViewController *controller) {

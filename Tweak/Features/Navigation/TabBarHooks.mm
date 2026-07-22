@@ -12,6 +12,9 @@ static IMP OriginalSetPivotRenderer;
 static IMP OriginalPivotItemLayout;
 static IMP OriginalPivotItemSetSelected;
 static IMP OriginalPivotItemTraitChanged;
+static IMP OriginalPivotLabelSetHidden;
+static IMP OriginalPivotLabelSetAlpha;
+static IMP OriginalPivotButtonLayout;
 static IMP OriginalPivotBarLayout;
 static IMP OriginalAppViewDidLoad;
 static IMP OriginalBrowseViewDidLoad;
@@ -21,6 +24,8 @@ static const void *YTKACEDownloadsAssociation = &YTKACEDownloadsAssociation;
 static const void *YTKACETabAssociation = &YTKACETabAssociation;
 static const void *YTKACETabSelectedAssociation = &YTKACETabSelectedAssociation;
 static NSString * const YTKACEPivotIdentifier = @"FEYTKACE";
+static NSInteger const YTKACEExtraIconTag = 0x59414349;
+static NSInteger const YTKACEExtraLabelTag = 0x5941434A;
 static BOOL YTKACEStartupApplied;
 
 static id YTKACEValue(id receiver, NSString *selectorName) {
@@ -367,6 +372,30 @@ static NSString *YTKACEHideKeyForToken(NSString *token) {
         [token containsString:@"sports"]) {
         return @"kHideSports";
     }
+    if ([token containsString:@"uctfrv9o2ahqozjjynzrv-xg"] ||
+        [token containsString:@"learning"]) {
+        return @"kHideLearning";
+    }
+    if ([token containsString:@"ucrpq4p1ql_hg8rkxikm1moq"] ||
+        [token containsString:@"fashion"]) {
+        return @"kHideFashion";
+    }
+    if ([token containsString:@"feplaylist_aggregation"] ||
+        [token containsString:@"playlist_aggregation"]) {
+        return @"kHidePlaylists";
+    }
+    if ([token containsString:@"fehistory"] ||
+        [token isEqualToString:@"history"]) {
+        return @"kHideHistory";
+    }
+    if ([token containsString:@"fenotifications_inbox"] ||
+        [token containsString:@"notifications_inbox"]) {
+        return @"kHideNotifs";
+    }
+    if ([token isEqualToString:@"vlwl"] ||
+        [token containsString:@"watch_later"]) {
+        return @"kHideWatchLater";
+    }
     if ([token containsString:@"short"]) {
         return @"kHideShorts";
     }
@@ -410,6 +439,30 @@ static NSString *YTKACECanonicalTabToken(NSString *token) {
     if ([token containsString:@"ucegdi0xixxz-qjofpf4jskw"] ||
         [token containsString:@"sports"]) {
         return @"sports";
+    }
+    if ([token containsString:@"uctfrv9o2ahqozjjynzrv-xg"] ||
+        [token containsString:@"learning"]) {
+        return @"learning";
+    }
+    if ([token containsString:@"ucrpq4p1ql_hg8rkxikm1moq"] ||
+        [token containsString:@"fashion"]) {
+        return @"fashion";
+    }
+    if ([token containsString:@"feplaylist_aggregation"] ||
+        [token containsString:@"playlist_aggregation"]) {
+        return @"playlists";
+    }
+    if ([token containsString:@"fehistory"] ||
+        [token isEqualToString:@"history"]) {
+        return @"history";
+    }
+    if ([token containsString:@"fenotifications_inbox"] ||
+        [token containsString:@"notifications_inbox"]) {
+        return @"notifications";
+    }
+    if ([token isEqualToString:@"vlwl"] ||
+        [token containsString:@"watch_later"]) {
+        return @"watchlater";
     }
     if ([token containsString:@"short"] || [token containsString:@"reel"]) {
         return @"shorts";
@@ -554,7 +607,19 @@ static void YTKACESetPivotRenderer(id receiver, SEL selector, id renderer) {
                 @{@"token": @"news", @"id": @"UCYfdidRxbB8Qhf0Nx7ioOYw",
                   @"title": @"News", @"key": @"kHideNews", @"icon": @1004},
                 @{@"token": @"sports", @"id": @"UCEgdi0XIXXZ-qJOFPf4JSKw",
-                  @"title": @"Sports", @"key": @"kHideSports", @"icon": @1005}
+                  @"title": @"Sports", @"key": @"kHideSports", @"icon": @1005},
+                @{@"token": @"learning", @"id": @"UCtFRv9O2AHqOZjjynzrv-xg",
+                  @"title": @"Learning", @"key": @"kHideLearning", @"icon": @1006},
+                @{@"token": @"fashion", @"id": @"UCrpQ4p1Ql_hG8rKXIKM1MOQ",
+                  @"title": @"Fashion", @"key": @"kHideFashion", @"icon": @1007},
+                @{@"token": @"playlists", @"id": @"FEplaylist_aggregation",
+                  @"title": @"Playlists", @"key": @"kHidePlaylists", @"icon": @1008},
+                @{@"token": @"history", @"id": @"FEhistory",
+                  @"title": @"History", @"key": @"kHideHistory", @"icon": @1009},
+                @{@"token": @"notifications", @"id": @"FEnotifications_inbox",
+                  @"title": @"Notifs", @"key": @"kHideNotifs", @"icon": @1010},
+                @{@"token": @"watchlater", @"id": @"VLWL",
+                  @"title": @"WLater", @"key": @"kHideWatchLater", @"icon": @1011}
             ];
             NSMutableSet<NSString *> *present = [NSMutableSet set];
             for (id item in filtered) {
@@ -623,14 +688,136 @@ static void YTKACESetLabelsHidden(UIView *view, BOOL hidden) {
     for (UIView *subview in view.subviews) {
         if ([subview isKindOfClass:UILabel.class]) {
             subview.hidden = hidden;
+            subview.alpha = hidden ? 0.0 : 1.0;
         }
         YTKACESetLabelsHidden(subview, hidden);
     }
 }
 
+static BOOL YTKACEInsidePivotItem(UIView *view) {
+    for (UIView *current = view.superview; current != nil; current = current.superview) {
+        if ([NSStringFromClass(current.class) containsString:@"PivotBarItemView"]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static UIView *YTKACEPivotItemAncestor(UIView *view) {
+    for (UIView *current = view.superview; current != nil; current = current.superview) {
+        if ([NSStringFromClass(current.class) containsString:@"PivotBarItemView"]) {
+            return current;
+        }
+    }
+    return nil;
+}
+
+static void YTKACEPivotLabelSetHidden(UILabel *receiver,
+                                      SEL selector,
+                                      BOOL hidden) {
+    if (YTKACEFeatureEnabled(@"kHideTabLabels") &&
+        YTKACEInsidePivotItem(receiver)) {
+        hidden = YES;
+    }
+    if (OriginalPivotLabelSetHidden != NULL) {
+        ((void (*)(id, SEL, BOOL))OriginalPivotLabelSetHidden)(
+            receiver, selector, hidden
+        );
+    }
+}
+
+static void YTKACEPivotLabelSetAlpha(UILabel *receiver,
+                                     SEL selector,
+                                     CGFloat alpha) {
+    if (YTKACEFeatureEnabled(@"kHideTabLabels") &&
+        YTKACEInsidePivotItem(receiver)) {
+        alpha = 0.0;
+    }
+    if (OriginalPivotLabelSetAlpha != NULL) {
+        ((void (*)(id, SEL, CGFloat))OriginalPivotLabelSetAlpha)(
+            receiver, selector, alpha
+        );
+    }
+}
+
+static UIImageView *YTKACEFindImageView(UIView *view);
+
+static BOOL YTKACEContainsLabel(UIView *view) {
+    if ([view isKindOfClass:UILabel.class]) return YES;
+    for (UIView *child in view.subviews) {
+        if (YTKACEContainsLabel(child)) return YES;
+    }
+    return NO;
+}
+
+static void YTKACECollectIconCandidates(UIView *view,
+                                        UIView *root,
+                                        NSMutableArray<UIView *> *candidates) {
+    if (view != root && ![view isKindOfClass:UILabel.class]) {
+        NSString *name = NSStringFromClass(view.class).lowercaseString;
+        CGFloat width = CGRectGetWidth(view.bounds);
+        CGFloat height = CGRectGetHeight(view.bounds);
+        BOOL iconClass = [view isKindOfClass:UIImageView.class] ||
+            [name containsString:@"icon"] || [name containsString:@"image"];
+        BOOL iconSize = width >= 12.0 && height >= 12.0 &&
+            width <= 64.0 && height <= 64.0;
+        if ((view.tag == 0x59414345 || view.tag == YTKACEExtraIconTag ||
+             iconClass) && iconSize) {
+            [candidates addObject:view];
+        }
+    }
+    for (UIView *child in view.subviews) {
+        YTKACECollectIconCandidates(child, root, candidates);
+    }
+}
+
+static UIView *YTKACEIconContainer(UIView *candidate, UIView *root) {
+    UIView *container = candidate;
+    while (container.superview != nil && container.superview != root) {
+        UIView *parent = container.superview;
+        if (YTKACEContainsLabel(parent) ||
+            CGRectGetWidth(parent.bounds) > 80.0 ||
+            CGRectGetHeight(parent.bounds) > 80.0) {
+            break;
+        }
+        container = parent;
+    }
+    return container;
+}
+
+static void YTKACECenterPivotIcon(UIView *view, BOOL centered) {
+    if (!centered) return;
+    NSMutableArray<UIView *> *candidates = [NSMutableArray array];
+    YTKACECollectIconCandidates(view, view, candidates);
+    UIView *candidate = nil;
+    CGFloat bestScore = CGFLOAT_MAX;
+    CGPoint rootCenter = CGPointMake(CGRectGetMidX(view.bounds),
+                                     CGRectGetMidY(view.bounds));
+    for (UIView *item in candidates) {
+        CGPoint center = [item.superview convertPoint:item.center toView:view];
+        CGFloat score = fabs(center.x - rootCenter.x) +
+            fabs(CGRectGetWidth(item.bounds) - 24.0) * 0.25 +
+            (item.hidden ? 100.0 : 0.0);
+        if (item.tag == 0x59414345 || item.tag == YTKACEExtraIconTag) {
+            score -= 1000.0;
+        }
+        if (score < bestScore) {
+            bestScore = score;
+            candidate = item;
+        }
+    }
+    UIView *iconView = candidate == nil ? nil : YTKACEIconContainer(candidate, view);
+    if (iconView == nil || iconView.superview == nil) return;
+    CGPoint target = [view convertPoint:CGPointMake(CGRectGetMidX(view.bounds),
+                                                     CGRectGetMidY(view.bounds))
+                                toView:iconView.superview];
+    iconView.center = target;
+}
+
 static UILabel *YTKACEFindNativeLabel(UIView *view) {
     if ([view isKindOfClass:UILabel.class]) {
-        return view.tag == 0x59414347 ? nil : (UILabel *)view;
+        return (view.tag == 0x59414347 || view.tag == YTKACEExtraLabelTag)
+            ? nil : (UILabel *)view;
     }
     for (UIView *subview in view.subviews) {
         UILabel *label = YTKACEFindNativeLabel(subview);
@@ -641,9 +828,28 @@ static UILabel *YTKACEFindNativeLabel(UIView *view) {
     return nil;
 }
 
+static UIColor *YTKACETabForegroundColor(UIView *view) {
+    for (UIView *current = view.superview; current != nil; current = current.superview) {
+        UIColor *color = [current.backgroundColor
+            resolvedColorWithTraitCollection:view.traitCollection];
+        CGFloat red = 0.0;
+        CGFloat green = 0.0;
+        CGFloat blue = 0.0;
+        CGFloat alpha = 0.0;
+        if ([color getRed:&red green:&green blue:&blue alpha:&alpha] &&
+            alpha > 0.2) {
+            CGFloat luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+            return luminance < 0.5 ? UIColor.whiteColor : UIColor.blackColor;
+        }
+    }
+    return [UIColor.labelColor
+        resolvedColorWithTraitCollection:view.traitCollection];
+}
+
 static UIImageView *YTKACEFindImageView(UIView *view) {
     if ([view isKindOfClass:UIImageView.class]) {
-        return view.tag == 0x59414345 ? nil : (UIImageView *)view;
+        return (view.tag == 0x59414345 || view.tag == YTKACEExtraIconTag)
+            ? nil : (UIImageView *)view;
     }
     for (UIView *subview in view.subviews) {
         UIImageView *imageView = YTKACEFindImageView(subview);
@@ -703,10 +909,6 @@ static void YTKACERestorePivotItem(UIView *view,
                              YTKACETabAssociation,
                              nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(view,
-                             YTKACETabSelectedAssociation,
-                             nil,
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (nativeLabel != nil) {
         nativeLabel.hidden = hideLabel;
         nativeLabel.alpha = 1.0;
@@ -742,11 +944,8 @@ static void YTKACEApplyDownloadIcon(UIView *view) {
                              YTKACETabAssociation,
                              @YES,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    UIColor *tabColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
-        return traits.userInterfaceStyle == UIUserInterfaceStyleDark
-            ? UIColor.whiteColor
-            : UIColor.blackColor;
-    }];
+    UIImageView *nativeImageView = YTKACEFindImageView(view);
+    UIColor *tabColor = YTKACETabForegroundColor(view);
     UILabel *label = (UILabel *)[view viewWithTag:0x59414347];
     if (nativeLabel != nil) {
         nativeLabel.text = @"";
@@ -793,7 +992,6 @@ static void YTKACEApplyDownloadIcon(UIView *view) {
             UIViewAutoresizingFlexibleBottomMargin;
         [view addSubview:imageView];
     }
-    UIImageView *nativeImageView = YTKACEFindImageView(view);
     if (nativeImageView != nil && nativeImageView != imageView) {
         nativeImageView.hidden = YES;
     }
@@ -803,7 +1001,7 @@ static void YTKACEApplyDownloadIcon(UIView *view) {
     CGFloat size = 24.0;
     imageView.frame = CGRectMake(
         (CGRectGetWidth(view.bounds) - size) * 0.5,
-        4.0,
+        hideLabel ? (CGRectGetHeight(view.bounds) - size) * 0.5 : 4.0,
         size,
         size
     );
@@ -811,6 +1009,166 @@ static void YTKACEApplyDownloadIcon(UIView *view) {
                              MAX(0.0, CGRectGetHeight(view.bounds) - 16.0),
                              CGRectGetWidth(view.bounds),
                              14.0);
+}
+
+static NSDictionary *YTKACEExtraTabIcon(NSString *token) {
+    static NSDictionary *icons;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        icons = @{
+            @"music": @[@"yt_outline_music_24pt_3x_Normal",
+                         @"music_24pt_3x_Normal",
+                         @"music.note", @"music.note"],
+            @"live": @[@"live_24pt_3x_Normal", @"ic_youtube_live_3x_Normal",
+                        @"dot.radiowaves.left.and.right",
+                        @"dot.radiowaves.left.and.right"],
+            @"gaming": @[@"gaming_24pt_3x_Normal",
+                          @"gaming_24pt_3x_Normal_fill",
+                          @"gamecontroller", @"gamecontroller.fill"],
+            @"news": @[@"news_24pt_3x_Normal", @"news_24pt_3x_Normal",
+                        @"newspaper", @"newspaper.fill"],
+            @"sports": @[@"G_sport", @"G_sport_fill",
+                          @"trophy", @"trophy.fill"],
+            @"learning": @[@"G_Learning", @"G_Learning_fill",
+                            @"graduationcap", @"graduationcap.fill"],
+            @"fashion": @[@"fashion_24pt_3x_Normal",
+                           @"fashion_24pt_3x_Normal",
+                           @"tshirt", @"tshirt.fill"],
+            @"playlists": @[@"playlist", @"playlist_fill",
+                             @"music.note.list", @"music.note.list"],
+            @"history": @[@"history", @"history_fill",
+                           @"clock.arrow.circlepath",
+                           @"clock.arrow.circlepath"],
+            @"notifications": @[@"ic_notifications_none_3x_Normal",
+                                 @"ic_notifications_3x_Normal",
+                                 @"bell", @"bell.fill"],
+            @"watchlater": @[@"clock_24pt_3x_Normal",
+                              @"yt_fill_clock_24pt_3x_Normal",
+                              @"clock", @"clock.fill"]
+        };
+    });
+    NSArray *values = icons[token];
+    return values == nil ? nil : @{
+        @"normalAsset": values[0],
+        @"selectedAsset": values[1],
+        @"normalSymbol": values[2],
+        @"selectedSymbol": values[3]
+    };
+}
+
+static BOOL YTKACEPivotItemSelected(UIView *view) {
+    BOOL selected = [objc_getAssociatedObject(
+        view,
+        YTKACETabSelectedAssociation
+    ) boolValue];
+    SEL selector = NSSelectorFromString(@"isSelected");
+    if ([view respondsToSelector:selector]) {
+        selected = selected ||
+            ((BOOL (*)(id, SEL))objc_msgSend)(view, selector);
+    }
+    return selected ||
+        ((view.accessibilityTraits & UIAccessibilityTraitSelected) != 0);
+}
+
+static void YTKACEApplyExtraTabIcon(UIView *view) {
+    NSString *token = YTKACECanonicalTabToken(YTKACETabToken(view));
+    NSDictionary *config = YTKACEExtraTabIcon(token);
+    if (config == nil) {
+        [[view viewWithTag:YTKACEExtraIconTag] removeFromSuperview];
+        [[view viewWithTag:YTKACEExtraLabelTag] removeFromSuperview];
+        return;
+    }
+    UIImageView *nativeImage = YTKACEFindImageView(view);
+    if (nativeImage != nil) {
+        nativeImage.hidden = YES;
+    }
+    UIImageView *icon = (UIImageView *)[view viewWithTag:YTKACEExtraIconTag];
+    if (icon == nil) {
+        icon = [[UIImageView alloc] initWithFrame:CGRectZero];
+        icon.tag = YTKACEExtraIconTag;
+        icon.contentMode = UIViewContentModeScaleAspectFit;
+        icon.userInteractionEnabled = NO;
+        [view addSubview:icon];
+    }
+    BOOL selected = YTKACEPivotItemSelected(view);
+    NSString *asset = config[selected ? @"selectedAsset" : @"normalAsset"];
+    NSString *symbol = config[selected ? @"selectedSymbol" : @"normalSymbol"];
+    UIImage *image = YTKACEAssetImage(asset, symbol);
+    if (image == nil) {
+        image = [UIImage systemImageNamed:@"circle"];
+    }
+    icon.image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    icon.tintColor = YTKACETabForegroundColor(view);
+    icon.hidden = NO;
+    CGFloat size = 24.0;
+    BOOL hideLabel = YTKACEFeatureEnabled(@"kHideTabLabels");
+    icon.frame = CGRectMake(
+        (CGRectGetWidth(view.bounds) - size) * 0.5,
+        hideLabel ? (CGRectGetHeight(view.bounds) - size) * 0.5 : 4.0,
+        size,
+        size
+    );
+    UILabel *nativeLabel = YTKACEFindNativeLabel(view);
+    UILabel *label = (UILabel *)[view viewWithTag:YTKACEExtraLabelTag];
+    NSString *title = nativeLabel.text.length != 0
+        ? nativeLabel.text : label.text;
+    UIFont *font = nativeLabel.font ?: label.font;
+    if (nativeLabel != nil) {
+        nativeLabel.text = @"";
+        nativeLabel.hidden = YES;
+        nativeLabel.alpha = 0.0;
+    }
+    if (label == nil) {
+        label = [[UILabel alloc] initWithFrame:CGRectZero];
+        label.tag = YTKACEExtraLabelTag;
+        label.textAlignment = NSTextAlignmentCenter;
+        label.userInteractionEnabled = NO;
+        [view addSubview:label];
+    }
+    label.text = title;
+    label.font = font ?: [UIFont systemFontOfSize:10.0];
+    label.textColor = icon.tintColor;
+    label.hidden = hideLabel;
+    label.alpha = hideLabel ? 0.0 : 1.0;
+    label.frame = CGRectMake(
+        0.0,
+        MAX(0.0, CGRectGetHeight(view.bounds) - 16.0),
+        CGRectGetWidth(view.bounds),
+        14.0
+    );
+}
+
+static void YTKACEApplyPivotItemPresentation(UIView *view) {
+    BOOL hideLabels = YTKACEFeatureEnabled(@"kHideTabLabels");
+    YTKACESetLabelsHidden(view, hideLabels);
+    YTKACEApplyDownloadIcon(view);
+    YTKACEApplyExtraTabIcon(view);
+    YTKACECenterPivotIcon(view, hideLabels);
+}
+
+static void YTKACEPivotButtonLayout(UIView *receiver, SEL selector) {
+    if (OriginalPivotButtonLayout != NULL) {
+        ((void (*)(id, SEL))OriginalPivotButtonLayout)(receiver, selector);
+    }
+    if (!YTKACEFeatureEnabled(@"kHideTabLabels")) return;
+    UIView *item = YTKACEPivotItemAncestor(receiver);
+    if (item == nil || CGRectIsEmpty(item.bounds)) return;
+    YTKACESetLabelsHidden(receiver, YES);
+    UIImageView *icon = nil;
+    for (UIView *child in receiver.subviews) {
+        if (![child isKindOfClass:UIImageView.class] || child.hidden ||
+            CGRectGetWidth(child.bounds) < 12.0 ||
+            CGRectGetHeight(child.bounds) < 12.0) {
+            continue;
+        }
+        icon = (UIImageView *)child;
+        break;
+    }
+    if (icon == nil) return;
+    CGPoint target = [item convertPoint:CGPointMake(CGRectGetMidX(item.bounds),
+                                                    CGRectGetMidY(item.bounds))
+                                  toView:receiver];
+    icon.center = target;
 }
 
 static BOOL YTKACEContainsCreateText(NSString *value) {
@@ -867,11 +1225,7 @@ static void YTKACEPivotItemLayout(UIView *receiver, SEL selector) {
     if (OriginalPivotItemLayout != NULL) {
         ((void (*)(id, SEL))OriginalPivotItemLayout)(receiver, selector);
     }
-    YTKACESetLabelsHidden(
-        receiver,
-        YTKACEFeatureEnabled(@"kHideTabLabels")
-    );
-    YTKACEApplyDownloadIcon(receiver);
+    YTKACEApplyPivotItemPresentation(receiver);
 }
 
 static void YTKACEPivotItemSetSelected(UIView *receiver,
@@ -882,15 +1236,13 @@ static void YTKACEPivotItemSetSelected(UIView *receiver,
             receiver, selector, selected
         );
     }
-    if ([objc_getAssociatedObject(receiver, YTKACETabAssociation) boolValue]) {
-        objc_setAssociatedObject(receiver,
-                                 YTKACETabSelectedAssociation,
-                                 @(selected),
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    YTKACEApplyDownloadIcon(receiver);
+    objc_setAssociatedObject(receiver,
+                             YTKACETabSelectedAssociation,
+                             @(selected),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    YTKACEApplyPivotItemPresentation(receiver);
     dispatch_async(dispatch_get_main_queue(), ^{
-        YTKACEApplyDownloadIcon(receiver);
+        YTKACEApplyPivotItemPresentation(receiver);
     });
 }
 
@@ -902,10 +1254,25 @@ static void YTKACEPivotItemTraitChanged(UIView *receiver,
             receiver, selector, previous
         );
     }
-    YTKACEApplyDownloadIcon(receiver);
+    YTKACEApplyPivotItemPresentation(receiver);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        YTKACEApplyPivotItemPresentation(receiver);
+    });
 }
 
 void YTKACEInstallTabBarHooks(void) {
+    YTKACEInstallInstanceHook(@"UILabel",
+                              @"setHidden:",
+                              (IMP)YTKACEPivotLabelSetHidden,
+                              &OriginalPivotLabelSetHidden);
+    YTKACEInstallInstanceHook(@"UILabel",
+                              @"setAlpha:",
+                              (IMP)YTKACEPivotLabelSetAlpha,
+                              &OriginalPivotLabelSetAlpha);
+    YTKACEInstallInstanceHook(@"YTQTMButton",
+                              @"layoutSubviews",
+                              (IMP)YTKACEPivotButtonLayout,
+                              &OriginalPivotButtonLayout);
     YTKACEInstallInstanceHook(@"YTPivotBarView",
                               @"setRenderer:",
                               (IMP)YTKACESetPivotRenderer,

@@ -310,8 +310,13 @@ static void YTKACEVideoOverlayLayout(UIView *receiver, SEL selector) {
         ((void (*)(id, SEL))OriginalVideoOverlayLayout)(receiver, selector);
     }
     YTKACEApplyOverlaySelectors(receiver);
-    for (UIView *subview in receiver.subviews) {
-        YTKACEApplyOverlayTree(subview);
+    if (YTKACEOverlayPreference(@"kEnableHideDarkOverlay",
+                                @"kEnableHideDarkOverlayBackground")) {
+        for (UIView *subview in receiver.subviews) {
+            if (YTKACEIsDarkOverlayView(subview)) {
+                YTKACESetOverlayHidden(subview, YES);
+            }
+        }
     }
 }
 

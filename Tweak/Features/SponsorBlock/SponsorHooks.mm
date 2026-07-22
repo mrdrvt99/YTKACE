@@ -9,6 +9,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <math.h>
 
 static IMP OriginalDidActivateVideo;
 static IMP OriginalSingleVideoTimeChanged;
@@ -19,6 +20,9 @@ static const void *YTKACESponsorSegmentsAssociation = &YTKACESponsorSegmentsAsso
 static const void *YTKACESponsorVideoAssociation = &YTKACESponsorVideoAssociation;
 static const void *YTKACESponsorSkippedAssociation = &YTKACESponsorSkippedAssociation;
 static const void *YTKACESponsorMarkerAssociation = &YTKACESponsorMarkerAssociation;
+static const void *YTKACESponsorRenderedSegmentsAssociation = &YTKACESponsorRenderedSegmentsAssociation;
+static const void *YTKACESponsorMarkerBoundsAssociation = &YTKACESponsorMarkerBoundsAssociation;
+static const void *YTKACESponsorMarkerDurationAssociation = &YTKACESponsorMarkerDurationAssociation;
 static __weak id YTKACECurrentSponsorController;
 static NSHashTable<UIView *> *YTKACESponsorBars;
 
@@ -438,11 +442,12 @@ static void YTKACEPlayerBarLayout(UIView *receiver, SEL selector) {
                                  container,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    [container removeFromSuperlayer];
-    [target.layer addSublayer:container];
+    if (container.superlayer != target.layer) {
+        [container removeFromSuperlayer];
+        [target.layer addSublayer:container];
+    }
     container.frame = target.bounds;
     container.zPosition = 10000.0;
-    [container.sublayers makeObjectsPerformSelector:@selector(removeFromSuperlayer)];
 
     id controller = YTKACECurrentSponsorController;
     NSArray<NSDictionary<NSString *, id> *> *segments =
@@ -452,29 +457,61 @@ static void YTKACEPlayerBarLayout(UIView *receiver, SEL selector) {
         @[@"currentVideoTotalMediaTime", @"currentVideoTotalTime",
           @"currentVideoDuration", @"totalMediaTime"]
     );
-    if (!YTKACESponsorBlockEnabled() || duration <= 0.0 || segments.count == 0) {
-        return;
-    }
+    BOOL enabled = YTKACESponsorBlockEnabled() && duration > 0.0 && segments.count != 0;
+    container.hidden = !enabled;
+    if (!enabled) return;
 
     CGFloat width = CGRectGetWidth(target.bounds);
     CGFloat height = CGRectGetHeight(target.bounds);
-    for (NSDictionary<NSString *, id> *segment in segments) {
+    NSArray *renderedSegments = objc_getAssociatedObject(
+        receiver, YTKACESponsorRenderedSegmentsAssociation);
+    BOOL rebuild = renderedSegments != segments || container.sublayers.count != segments.count;
+    if (rebuild) {
+        [container.sublayers makeObjectsPerformSelector:@selector(removeFromSuperlayer)];
+        for (NSDictionary<NSString *, id> *segment in segments) {
+            CALayer *marker = [CALayer layer];
+            NSString *category = [segment[@"category"] isKindOfClass:NSString.class]
+                ? segment[@"category"] : @"sponsor";
+            marker.backgroundColor = YTKACESponsorCategoryColor(category).CGColor;
+            marker.zPosition = 1.0;
+            [container addSublayer:marker];
+        }
+        objc_setAssociatedObject(receiver,
+                                 YTKACESponsorRenderedSegmentsAssociation,
+                                 segments,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    CGRect previousBounds = [objc_getAssociatedObject(
+        receiver, YTKACESponsorMarkerBoundsAssociation) CGRectValue];
+    double previousDuration = [objc_getAssociatedObject(
+        receiver, YTKACESponsorMarkerDurationAssociation) doubleValue];
+    if (!rebuild && CGRectEqualToRect(previousBounds, target.bounds) &&
+        fabs(previousDuration - duration) < 0.001) return;
+    objc_setAssociatedObject(receiver,
+                             YTKACESponsorMarkerBoundsAssociation,
+                             [NSValue valueWithCGRect:target.bounds],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(receiver,
+                             YTKACESponsorMarkerDurationAssociation,
+                             @(duration),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    [segments enumerateObjectsUsingBlock:
+        ^(NSDictionary<NSString *, id> *segment, NSUInteger index, __unused BOOL *stop) {
         double start = [segment[@"start"] doubleValue];
         double end = MIN([segment[@"end"] doubleValue], duration);
-        if (end <= start) {
-            continue;
-        }
-        CALayer *marker = [CALayer layer];
-        NSString *category = [segment[@"category"] isKindOfClass:NSString.class]
-            ? segment[@"category"] : @"sponsor";
-        marker.backgroundColor = YTKACESponsorCategoryColor(category).CGColor;
+        CALayer *marker = container.sublayers[index];
+        marker.hidden = end <= start;
+        if (marker.hidden) return;
         marker.frame = CGRectMake((CGFloat)(start / duration) * width,
                                   MAX(0.0, height - 2.0),
                                   MAX(1.0, (CGFloat)((end - start) / duration) * width),
                                   2.0);
-        marker.zPosition = 1.0;
-        [container addSublayer:marker];
-    }
+    }];
+    [CATransaction commit];
 }
 
 void YTKACEInstallSponsorBlockHooks(void) {
