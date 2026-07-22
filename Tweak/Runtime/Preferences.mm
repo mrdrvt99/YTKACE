@@ -84,7 +84,6 @@ void YTKACERegisterDefaults(void) {
         @"kTabOrder": @[@"home", @"shorts", @"subscriptions", @"library", @"ytkace"]
     }];
     [YTKACEDefaults() setBool:YES forKey:YTKACEMasterEnabledKey];
-    [YTKACEDefaults() removeObjectForKey:@"YTKACEDebugPivot"];
     if ([YTKACEDefaults() boolForKey:@"clearonstartup"]) {
         NSDate *lastClear = [YTKACEDefaults() objectForKey:@"YTKACELastCacheClearDate"];
         if (![lastClear isKindOfClass:NSDate.class] ||

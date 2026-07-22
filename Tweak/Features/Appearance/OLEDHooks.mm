@@ -1,7 +1,6 @@
 #import "../../YTKACE.h"
 #import "../../Runtime/Hooking.h"
 #import "../../Runtime/Preferences.h"
-#import "../Downloads/DownloadLog.h"
 #import "../Interface/NavigationVisibility.h"
 
 #import <UIKit/UIKit.h>
@@ -85,15 +84,6 @@ static void YTKACEAppTraitChanged(UIViewController *receiver,
     if (previous != nil &&
         ![receiver.traitCollection
             hasDifferentColorAppearanceComparedToTraitCollection:previous]) return;
-    YTKACEDownloadLog(@"appearance",
-        @"trait %@ previous=%ld current=%ld oled=%d active=%d view=%@ bg=%@",
-        NSStringFromClass(receiver.class),
-        (long)previous.userInterfaceStyle,
-        (long)receiver.traitCollection.userInterfaceStyle,
-        YTKACEFeatureEnabled(YTKACEOLEDKey),
-        YTKACEOLEDActive(receiver.traitCollection),
-        NSStringFromCGRect(receiver.view.frame),
-        receiver.view.backgroundColor);
     if (!YTKACEFeatureEnabled(YTKACEOLEDKey)) return;
     [receiver setNeedsStatusBarAppearanceUpdate];
     [receiver.view setNeedsLayout];
