@@ -3,6 +3,7 @@
 #import "../../Runtime/Preferences.h"
 #import "../../Settings/YTKACEDownloadsController.h"
 #import "../../UI/Assets.h"
+#import "../Interface/NavigationVisibility.h"
 
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
@@ -27,6 +28,7 @@ static NSString * const YTKACEPivotIdentifier = @"FEYTKACE";
 static NSInteger const YTKACEExtraIconTag = 0x59414349;
 static NSInteger const YTKACEExtraLabelTag = 0x5941434A;
 static BOOL YTKACEStartupApplied;
+static BOOL YTKACENavigationRefreshScheduled;
 
 static id YTKACEValue(id receiver, NSString *selectorName) {
     SEL selector = NSSelectorFromString(selectorName);
@@ -1258,6 +1260,14 @@ static void YTKACEPivotItemTraitChanged(UIView *receiver,
     dispatch_async(dispatch_get_main_queue(), ^{
         YTKACEApplyPivotItemPresentation(receiver);
     });
+    if (YTKACEFeatureEnabled(YTKACEOLEDKey) &&
+        !YTKACENavigationRefreshScheduled) {
+        YTKACENavigationRefreshScheduled = YES;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            YTKACENavigationRefreshScheduled = NO;
+            YTKACERefreshNavigationAppearance();
+        });
+    }
 }
 
 void YTKACEInstallTabBarHooks(void) {

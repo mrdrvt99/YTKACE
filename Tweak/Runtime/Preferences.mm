@@ -137,6 +137,30 @@ BOOL YTKACEOLEDActive(UITraitCollection *traits) {
     return current.userInterfaceStyle == UIUserInterfaceStyleDark;
 }
 
+UIColor *YTKACEInterfaceBackgroundColor(UITraitCollection *traits) {
+    if (YTKACEOLEDActive(traits)) return UIColor.blackColor;
+    UIUserInterfaceStyle style = traits.userInterfaceStyle;
+    if (style == UIUserInterfaceStyleUnspecified) {
+        style = UIScreen.mainScreen.traitCollection.userInterfaceStyle;
+    }
+    return style == UIUserInterfaceStyleDark
+        ? [UIColor colorWithWhite:0.075 alpha:1.0]
+        : UIColor.whiteColor;
+}
+
+UIColor *YTKACEInterfaceSurfaceColor(UITraitCollection *traits) {
+    if (YTKACEOLEDActive(traits)) {
+        return [UIColor colorWithWhite:0.10 alpha:1.0];
+    }
+    UIUserInterfaceStyle style = traits.userInterfaceStyle;
+    if (style == UIUserInterfaceStyleUnspecified) {
+        style = UIScreen.mainScreen.traitCollection.userInterfaceStyle;
+    }
+    return style == UIUserInterfaceStyleDark
+        ? [UIColor colorWithWhite:0.16 alpha:1.0]
+        : [UIColor colorWithWhite:0.95 alpha:1.0];
+}
+
 BOOL YTKACESponsorBlockEnabled(void) {
     if (!YTKACEMasterEnabled()) {
         return NO;

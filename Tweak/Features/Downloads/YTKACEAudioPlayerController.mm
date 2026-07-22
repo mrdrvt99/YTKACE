@@ -42,19 +42,14 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
 @implementation YTKACEAudioPlayerController
 
 - (void)applyTheme {
-    BOOL oled = YTKACEOLEDActive(self.traitCollection);
-    self.view.backgroundColor = oled
-        ? UIColor.blackColor
-        : UIColor.systemBackgroundColor;
-    self.queuePanel.backgroundColor = oled
-        ? UIColor.blackColor
-        : UIColor.systemBackgroundColor;
-    self.optionsCard.backgroundColor = oled
-        ? UIColor.blackColor
-        : UIColor.secondarySystemBackgroundColor;
-    self.artworkView.backgroundColor = self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark
-        ? [UIColor colorWithWhite:0.08 alpha:1.0]
-        : UIColor.tertiarySystemBackgroundColor;
+    self.view.backgroundColor =
+        YTKACEInterfaceBackgroundColor(self.traitCollection);
+    self.queuePanel.backgroundColor =
+        YTKACEInterfaceBackgroundColor(self.traitCollection);
+    self.optionsCard.backgroundColor =
+        YTKACEInterfaceSurfaceColor(self.traitCollection);
+    self.artworkView.backgroundColor =
+        YTKACEInterfaceSurfaceColor(self.traitCollection);
     self.titleLabel.textColor = UIColor.labelColor;
     self.positionLabel.textColor = UIColor.secondaryLabelColor;
     self.elapsedLabel.textColor = UIColor.secondaryLabelColor;
@@ -160,7 +155,8 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
     self.artworkView.contentMode = UIViewContentModeScaleAspectFill;
     self.artworkView.clipsToBounds = YES;
     self.artworkView.layer.cornerRadius = 9.0;
-    self.artworkView.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
+    self.artworkView.backgroundColor =
+        YTKACEInterfaceSurfaceColor(self.traitCollection);
     self.artworkView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.artworkView];
 
@@ -247,7 +243,8 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
 
 - (void)buildQueue {
     self.queuePanel = [UIView new];
-    self.queuePanel.backgroundColor = UIColor.systemBackgroundColor;
+    self.queuePanel.backgroundColor =
+        YTKACEInterfaceBackgroundColor(self.traitCollection);
     self.queuePanel.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.queuePanel];
 
@@ -370,7 +367,8 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
     [self.optionsView addGestureRecognizer:tap];
 
     self.optionsCard = [UIView new];
-    self.optionsCard.backgroundColor = UIColor.secondarySystemBackgroundColor;
+    self.optionsCard.backgroundColor =
+        YTKACEInterfaceSurfaceColor(self.traitCollection);
     self.optionsCard.layer.cornerRadius = 12.0;
     self.optionsCard.translatesAutoresizingMaskIntoConstraints = NO;
     [self.optionsView addSubview:self.optionsCard];

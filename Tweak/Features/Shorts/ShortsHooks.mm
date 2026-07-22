@@ -10,6 +10,7 @@
 
 static NSHashTable<UIView *> *YTKACEReelViews;
 static NSMutableDictionary<NSString *, NSValue *> *YTKACEShortsOriginals;
+static NSMutableSet<NSString *> *YTKACEShortsInstalledHooks;
 static const void *YTKACEShortsTrackAssociation = &YTKACEShortsTrackAssociation;
 static const void *YTKACEShortsFillAssociation = &YTKACEShortsFillAssociation;
 static const void *YTKACEShortsSkipAssociation = &YTKACEShortsSkipAssociation;
@@ -19,6 +20,12 @@ static NSInteger const YTKACEShortsDownloadTag = 0x59544B44;
 static double YTKACELastShortsTime;
 static double YTKACELastShortsDuration;
 static id YTKACELatestShortsPlayerResponse;
+
+static void YTKACEReelLayout(UIView *receiver, SEL selector);
+static void YTKACEShortsControllerLayout(UIViewController *receiver,
+                                         SEL selector);
+static void YTKACEPausedLayout(UIView *receiver, SEL selector);
+static void YTKACEInteractiveStickerLayout(UIView *receiver, SEL selector);
 
 static void YTKACESetShortsHidden(UIView *view, BOOL hidden) {
     NSNumber *baseline = objc_getAssociatedObject(
@@ -49,11 +56,37 @@ static IMP YTKACEShortsOriginal(id receiver, SEL selector) {
          cls = class_getSuperclass(cls)) {
         IMP original = (IMP)[YTKACEShortsOriginals[
             YTKACEShortsHookKey(cls, selector)] pointerValue];
-        if (original != NULL) {
+        if (original != NULL &&
+            original != (IMP)YTKACEReelLayout &&
+            original != (IMP)YTKACEShortsControllerLayout &&
+            original != (IMP)YTKACEPausedLayout &&
+            original != (IMP)YTKACEInteractiveStickerLayout) {
             return original;
         }
     }
     return NULL;
+}
+
+static Method YTKACEShortsDirectMethod(Class cls, SEL selector) {
+    if (cls == Nil) return NULL;
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(cls, &count);
+    Method result = NULL;
+    for (unsigned int index = 0; index < count; index++) {
+        if (method_getName(methods[index]) == selector) {
+            result = methods[index];
+            break;
+        }
+    }
+    free(methods);
+    return result;
+}
+
+static BOOL YTKACEShortsIsReplacement(IMP implementation) {
+    return implementation == (IMP)YTKACEReelLayout ||
+        implementation == (IMP)YTKACEShortsControllerLayout ||
+        implementation == (IMP)YTKACEPausedLayout ||
+        implementation == (IMP)YTKACEInteractiveStickerLayout;
 }
 
 static id YTKACEShortsObject(id receiver, NSString *name) {
@@ -304,27 +337,40 @@ static void YTKACEInteractiveStickerLayout(UIView *receiver, SEL selector) {
 }
 
 static void YTKACEInstallShortsLayout(NSString *className, IMP replacement) {
+    Class cls = NSClassFromString(className);
+    SEL selector = @selector(layoutSubviews);
+    if (YTKACEShortsDirectMethod(cls, selector) == NULL) return;
+    NSString *key = YTKACEShortsHookKey(cls, selector);
+    if ([YTKACEShortsInstalledHooks containsObject:key]) return;
+    IMP current = method_getImplementation(class_getInstanceMethod(cls, selector));
+    if (YTKACEShortsIsReplacement(current)) return;
     IMP original = NULL;
     if (YTKACEInstallInstanceHook(className, @"layoutSubviews",
                                   replacement, &original) &&
-        original != NULL) {
-        Class cls = NSClassFromString(className);
-        YTKACEShortsOriginals[YTKACEShortsHookKey(
-            cls, @selector(layoutSubviews))] =
+        original != NULL && !YTKACEShortsIsReplacement(original)) {
+        YTKACEShortsOriginals[key] =
             [NSValue valueWithPointer:(const void *)original];
+        [YTKACEShortsInstalledHooks addObject:key];
     }
 }
 
 static void YTKACEInstallShortsController(NSString *className) {
     SEL selector = @selector(viewDidLayoutSubviews);
+    Class cls = NSClassFromString(className);
+    if (YTKACEShortsDirectMethod(cls, selector) == NULL) return;
+    NSString *key = YTKACEShortsHookKey(cls, selector);
+    if ([YTKACEShortsInstalledHooks containsObject:key]) return;
+    IMP current = method_getImplementation(class_getInstanceMethod(cls, selector));
+    if (YTKACEShortsIsReplacement(current)) return;
     IMP original = NULL;
     if (YTKACEInstallInstanceHook(className,
                                   NSStringFromSelector(selector),
                                   (IMP)YTKACEShortsControllerLayout,
-                                  &original) && original != NULL) {
-        Class cls = NSClassFromString(className);
-        YTKACEShortsOriginals[YTKACEShortsHookKey(cls, selector)] =
+                                  &original) && original != NULL &&
+        !YTKACEShortsIsReplacement(original)) {
+        YTKACEShortsOriginals[key] =
             [NSValue valueWithPointer:(const void *)original];
+        [YTKACEShortsInstalledHooks addObject:key];
     }
 }
 
@@ -370,6 +416,7 @@ void YTKACEInstallShortsHooks(void) {
     if (YTKACEReelViews == nil) {
         YTKACEReelViews = [NSHashTable weakObjectsHashTable];
         YTKACEShortsOriginals = [NSMutableDictionary dictionary];
+        YTKACEShortsInstalledHooks = [NSMutableSet set];
         [NSNotificationCenter.defaultCenter
             addObserverForName:@"YTKACEPlaybackTimeDidChange"
             object:nil

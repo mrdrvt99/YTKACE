@@ -14,14 +14,14 @@
 
 static UIColor *YTKACERootBackground(void) {
     return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
-        return YTKACEOLEDActive(traits)
-            ? UIColor.blackColor
-            : UIColor.systemBackgroundColor;
+        return YTKACEInterfaceBackgroundColor(traits);
     }];
 }
 
 static UIColor *YTKACERootCellBackground(void) {
-    return YTKACERootBackground();
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        return YTKACEInterfaceBackgroundColor(traits);
+    }];
 }
 
 static UIImage *YTKACETemplateImage(NSString *asset, NSString *symbol) {
@@ -35,21 +35,16 @@ static UIImage *YTKACESponsorIcon(void) {
 }
 
 void YTKACEApplyAppearance(UIViewController *controller) {
-    BOOL oled = YTKACEFeatureEnabled(YTKACEOLEDKey);
     controller.view.backgroundColor = YTKACERootBackground();
     controller.overrideUserInterfaceStyle = UIUserInterfaceStyleUnspecified;
     UINavigationController *navigation = controller.navigationController;
     if (@available(iOS 15.0, *)) {
         UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
-        if (oled) {
-            [appearance configureWithOpaqueBackground];
-            appearance.backgroundColor = YTKACERootBackground();
-            appearance.titleTextAttributes = @{
-                NSForegroundColorAttributeName: UIColor.labelColor
-            };
-        } else {
-            [appearance configureWithDefaultBackground];
-        }
+        [appearance configureWithOpaqueBackground];
+        appearance.backgroundColor = YTKACERootBackground();
+        appearance.titleTextAttributes = @{
+            NSForegroundColorAttributeName: UIColor.labelColor
+        };
         navigation.navigationBar.standardAppearance = appearance;
         navigation.navigationBar.scrollEdgeAppearance = appearance;
         navigation.navigationBar.compactAppearance = appearance;

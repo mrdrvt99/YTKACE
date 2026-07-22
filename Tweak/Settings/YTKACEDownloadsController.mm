@@ -106,13 +106,10 @@ static UIAlertAction *YTKACEMenuAction(
 @implementation YTKACEDownloadCell
 
 - (void)applyTheme {
-    BOOL oled = YTKACEOLEDActive(self.traitCollection);
-    self.cardView.backgroundColor = oled
-        ? [UIColor colorWithWhite:0.12 alpha:1.0]
-        : UIColor.secondarySystemBackgroundColor;
-    self.thumbnailView.backgroundColor = self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark
-        ? [UIColor colorWithWhite:0.13 alpha:1.0]
-        : UIColor.tertiarySystemFillColor;
+    self.cardView.backgroundColor =
+        YTKACEInterfaceSurfaceColor(self.traitCollection);
+    self.thumbnailView.backgroundColor =
+        YTKACEInterfaceSurfaceColor(self.traitCollection);
     self.placeholderView.tintColor = UIColor.tertiaryLabelColor;
     self.nameLabel.textColor = UIColor.labelColor;
 }
@@ -241,16 +238,13 @@ static UIAlertAction *YTKACEMenuAction(
 @implementation YTKACEDownloadsController
 
 - (void)applyTheme {
-    BOOL oled = YTKACEOLEDActive(self.traitCollection);
-    UIColor *background = oled ? UIColor.blackColor : UIColor.systemBackgroundColor;
+    UIColor *background = YTKACEInterfaceBackgroundColor(self.traitCollection);
     self.view.backgroundColor = background;
     self.collectionView.backgroundColor = background;
-    self.miniPlayerBar.backgroundColor = oled
-        ? [UIColor colorWithWhite:0.08 alpha:0.98]
-        : UIColor.secondarySystemBackgroundColor;
-    self.miniVideoView.backgroundColor = self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark
-        ? [UIColor colorWithWhite:0.08 alpha:1.0]
-        : UIColor.tertiarySystemBackgroundColor;
+    self.miniPlayerBar.backgroundColor =
+        YTKACEInterfaceSurfaceColor(self.traitCollection);
+    self.miniVideoView.backgroundColor =
+        YTKACEInterfaceSurfaceColor(self.traitCollection);
     self.miniTitleLabel.textColor = UIColor.labelColor;
     self.miniSubtitleLabel.textColor = UIColor.secondaryLabelColor;
     self.miniPlayButton.tintColor = UIColor.labelColor;

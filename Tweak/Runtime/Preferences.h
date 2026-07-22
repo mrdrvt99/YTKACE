@@ -1,6 +1,6 @@
 #import <Foundation/Foundation.h>
 
-@class UITraitCollection;
+@class UIColor, UITraitCollection;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -18,6 +18,10 @@ FOUNDATION_EXPORT void YTKACERegisterDefaults(void);
 FOUNDATION_EXPORT BOOL YTKACEMasterEnabled(void);
 FOUNDATION_EXPORT BOOL YTKACEFeatureEnabled(NSString *key);
 FOUNDATION_EXPORT BOOL YTKACEOLEDActive(UITraitCollection * _Nullable traits);
+FOUNDATION_EXPORT UIColor *YTKACEInterfaceBackgroundColor(
+    UITraitCollection * _Nullable traits);
+FOUNDATION_EXPORT UIColor *YTKACEInterfaceSurfaceColor(
+    UITraitCollection * _Nullable traits);
 FOUNDATION_EXPORT BOOL YTKACESponsorBlockEnabled(void);
 FOUNDATION_EXPORT void YTKACESetPreference(NSString *key, BOOL enabled);
 FOUNDATION_EXPORT id _Nullable YTKACEPreferenceObject(NSString *key);

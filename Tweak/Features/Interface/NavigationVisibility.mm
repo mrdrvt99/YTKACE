@@ -9,10 +9,22 @@
 static IMP OriginalHeaderLogoLayout;
 static IMP OriginalLogoViewLayout;
 static IMP OriginalQTMButtonLayout;
+static IMP OriginalQTMButtonSetTint;
+static IMP OriginalQTMButtonSetImage;
+static IMP OriginalNavigationImageSetTint;
+static IMP OriginalNavigationImageSetImage;
 static IMP OriginalYTImageViewLayout;
+static IMP OriginalMainWindowTraitChanged;
+static IMP OriginalRightNavigationTraitChanged;
 static NSMutableDictionary<NSString *, NSValue *> *YTKACENavigationOriginals;
 static const void *YTKACENavigationHiddenAssociation = &YTKACENavigationHiddenAssociation;
 static BOOL YTKACENavigationObserverInstalled;
+static NSHashTable<UIView *> *YTKACENavigationOwners;
+static UIUserInterfaceStyle YTKACENavigationStyle = UIUserInterfaceStyleUnspecified;
+
+static void YTKACEApplyNavigationWindows(void);
+static void YTKACEApplyNavigationSelectors(id owner);
+static BOOL YTKACEInsideRightNavigation(UIView *view);
 
 static NSValue *YTKACENavigationIMPValue(IMP implementation) {
     return [NSValue value:&implementation withObjCType:@encode(IMP)];
@@ -166,10 +178,113 @@ static BOOL YTKACENavigationShouldHide(UIView *view) {
     return NO;
 }
 
+static BOOL YTKACEIsNavigationIcon(UIView *view) {
+    NSString *token = [[NSString stringWithFormat:@"%@ %@ %@",
+                        NSStringFromClass(view.class),
+                        view.accessibilityIdentifier ?: @"",
+                        view.accessibilityLabel ?: @""] lowercaseString];
+    if ([token containsString:@"account"] ||
+        [token containsString:@"avatar"] ||
+        [token containsString:@"profile"] ||
+        [token containsString:@"logo"]) return NO;
+    if ([token containsString:@"notification"] ||
+        [token containsString:@"bell"] ||
+        [token containsString:@"search"] ||
+        [token containsString:@"cast"] ||
+        [token containsString:@"airplay"] ||
+        [token containsString:@"routebutton"]) return YES;
+    if (![view isKindOfClass:UIButton.class] &&
+        ![view isKindOfClass:UIImageView.class]) return NO;
+    for (UIView *ancestor = view.superview; ancestor != nil;
+         ancestor = ancestor.superview) {
+        NSString *name = NSStringFromClass(ancestor.class).lowercaseString;
+        if ([name containsString:@"rightnavigation"] ||
+            [name containsString:@"headernavigation"] ||
+            [name containsString:@"topbar"]) return YES;
+    }
+    return NO;
+}
+
+static UIColor *YTKACENavigationForeground(UIView *view) {
+    if (YTKACEInsideRightNavigation(view)) {
+        UIUserInterfaceStyle style = YTKACENavigationStyle;
+        if (style == UIUserInterfaceStyleUnspecified) {
+            style = view.window.traitCollection.userInterfaceStyle;
+        }
+        if (style == UIUserInterfaceStyleUnspecified) {
+            style = view.traitCollection.userInterfaceStyle;
+        }
+        return style == UIUserInterfaceStyleDark
+            ? UIColor.whiteColor : UIColor.blackColor;
+    }
+    for (UIView *current = view.superview; current != nil;
+         current = current.superview) {
+        UIColor *resolved = [current.backgroundColor
+            resolvedColorWithTraitCollection:view.traitCollection];
+        CGFloat red = 0.0, green = 0.0, blue = 0.0, alpha = 0.0;
+        if ([resolved getRed:&red green:&green blue:&blue alpha:&alpha] &&
+            alpha > 0.5) {
+            CGFloat luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+            return luminance < 0.5 ? UIColor.whiteColor : UIColor.blackColor;
+        }
+    }
+    return view.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark
+        ? UIColor.whiteColor : UIColor.blackColor;
+}
+
+static BOOL YTKACEInsideRightNavigation(UIView *view) {
+    for (UIView *current = view; current != nil; current = current.superview) {
+        if ([NSStringFromClass(current.class)
+                isEqualToString:@"YTRightNavigationButtons"]) return YES;
+    }
+    return NO;
+}
+
+static void YTKACEApplyNavigationTint(UIView *view, UIColor *color) {
+    view.tintColor = color;
+    if ([view isKindOfClass:UIButton.class]) {
+        UIButton *button = (UIButton *)view;
+        for (NSNumber *stateValue in @[@(UIControlStateNormal),
+                                        @(UIControlStateHighlighted),
+                                        @(UIControlStateSelected)]) {
+            UIControlState state = (UIControlState)stateValue.unsignedIntegerValue;
+            UIImage *image = [button imageForState:state];
+            if (image != nil) {
+                [button setImage:[image imageWithRenderingMode:
+                    UIImageRenderingModeAlwaysTemplate] forState:state];
+            }
+        }
+    } else if ([view isKindOfClass:UIImageView.class]) {
+        UIImageView *imageView = (UIImageView *)view;
+        if (imageView.image != nil) {
+            imageView.image = [imageView.image imageWithRenderingMode:
+                UIImageRenderingModeAlwaysTemplate];
+        }
+    }
+    for (UIView *subview in view.subviews) {
+        YTKACEApplyNavigationTint(subview, color);
+    }
+}
+
 static void YTKACEApplyNavigationTree(UIView *view) {
+    if ([NSStringFromClass(view.class) isEqualToString:@"YTRightNavigationButtons"]) {
+        YTKACEApplyNavigationSelectors(view);
+    }
     YTKACESetNavigationHidden(view, YTKACENavigationShouldHide(view));
+    if (YTKACEFeatureEnabled(YTKACEOLEDKey) &&
+        YTKACEIsNavigationIcon(view)) {
+        YTKACEApplyNavigationTint(view, YTKACENavigationForeground(view));
+    }
     for (UIView *subview in view.subviews) {
         YTKACEApplyNavigationTree(subview);
+    }
+}
+
+void YTKACERefreshNavigationAppearance(void) {
+    if (!YTKACEFeatureEnabled(YTKACEOLEDKey)) return;
+    YTKACEApplyNavigationWindows();
+    for (UIView *owner in YTKACENavigationOwners.allObjects) {
+        YTKACEApplyNavigationSelectors(owner);
     }
 }
 
@@ -210,12 +325,22 @@ static void YTKACEApplyNavigationSelectors(id owner) {
     for (NSString *key in groups) {
         BOOL hidden = YTKACEFeatureEnabled(key);
         for (NSString *name in groups[key]) {
-            YTKACESetNavigationHidden(YTKACENavigationValue(owner, name), hidden);
+            UIView *target = YTKACENavigationValue(owner, name);
+            YTKACESetNavigationHidden(target, hidden);
+            if (target != nil && !hidden &&
+                YTKACEFeatureEnabled(YTKACEOLEDKey)) {
+                YTKACEApplyNavigationTint(
+                    target, YTKACENavigationForeground(target));
+            }
         }
     }
 }
 
 void YTKACEApplyRightNavigationVisibility(UIView *view) {
+    if (YTKACENavigationOwners == nil) {
+        YTKACENavigationOwners = [NSHashTable weakObjectsHashTable];
+    }
+    [YTKACENavigationOwners addObject:view];
     YTKACEApplyNavigationSelectors(view);
     YTKACEApplyNavigationTree(view);
 }
@@ -259,6 +384,108 @@ static void YTKACEQTMButtonLayout(UIView *receiver, SEL selector) {
             YTKACEFeatureEnabled(@"kEnableHideSearch")
         );
     }
+    if (YTKACEFeatureEnabled(YTKACEOLEDKey) &&
+        YTKACEIsNavigationIcon(receiver)) {
+        YTKACEApplyNavigationTint(receiver,
+                                  YTKACENavigationForeground(receiver));
+    }
+}
+
+static void YTKACEQTMButtonSetTint(UIView *receiver,
+                                   SEL selector,
+                                   UIColor *color) {
+    if (YTKACEFeatureEnabled(YTKACEOLEDKey) &&
+        YTKACEInsideRightNavigation(receiver)) {
+        color = YTKACENavigationForeground(receiver);
+    }
+    if (OriginalQTMButtonSetTint != NULL) {
+        ((void (*)(id, SEL, id))OriginalQTMButtonSetTint)(
+            receiver, selector, color);
+    }
+}
+
+static void YTKACENavigationImageSetTint(UIView *receiver,
+                                         SEL selector,
+                                         UIColor *color) {
+    if (YTKACEFeatureEnabled(YTKACEOLEDKey) &&
+        YTKACEInsideRightNavigation(receiver)) {
+        color = YTKACENavigationForeground(receiver);
+    }
+    if (OriginalNavigationImageSetTint != NULL) {
+        ((void (*)(id, SEL, id))OriginalNavigationImageSetTint)(
+            receiver, selector, color);
+    }
+}
+
+static void YTKACEQTMButtonSetImage(UIButton *receiver,
+                                    SEL selector,
+                                    UIImage *image,
+                                    UIControlState state) {
+    BOOL styled = YTKACEFeatureEnabled(YTKACEOLEDKey) &&
+        YTKACEInsideRightNavigation(receiver);
+    if (styled && image != nil) {
+        image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    }
+    if (OriginalQTMButtonSetImage != NULL) {
+        ((void (*)(id, SEL, id, UIControlState))OriginalQTMButtonSetImage)(
+            receiver, selector, image, state);
+    }
+    if (styled && OriginalQTMButtonSetTint != NULL) {
+        ((void (*)(id, SEL, id))OriginalQTMButtonSetTint)(
+            receiver, @selector(setTintColor:),
+            YTKACENavigationForeground(receiver));
+    }
+}
+
+static void YTKACENavigationImageSetImage(UIImageView *receiver,
+                                          SEL selector,
+                                          UIImage *image) {
+    BOOL styled = YTKACEFeatureEnabled(YTKACEOLEDKey) &&
+        YTKACEInsideRightNavigation(receiver);
+    if (styled && image != nil) {
+        image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    }
+    if (OriginalNavigationImageSetImage != NULL) {
+        ((void (*)(id, SEL, id))OriginalNavigationImageSetImage)(
+            receiver, selector, image);
+    }
+    if (styled && OriginalNavigationImageSetTint != NULL) {
+        ((void (*)(id, SEL, id))OriginalNavigationImageSetTint)(
+            receiver, @selector(setTintColor:),
+            YTKACENavigationForeground(receiver));
+    }
+}
+
+static void YTKACEMainWindowTraitChanged(UIWindow *receiver,
+                                         SEL selector,
+                                         UITraitCollection *previous) {
+    if (OriginalMainWindowTraitChanged != NULL) {
+        ((void (*)(id, SEL, id))OriginalMainWindowTraitChanged)(
+            receiver, selector, previous);
+    }
+    UIUserInterfaceStyle style = receiver.traitCollection.userInterfaceStyle;
+    if (style == UIUserInterfaceStyleUnspecified ||
+        style == previous.userInterfaceStyle) return;
+    YTKACENavigationStyle = style;
+    if (YTKACEFeatureEnabled(YTKACEOLEDKey)) {
+        YTKACERefreshNavigationAppearance();
+    }
+}
+
+static void YTKACERightNavigationTraitChanged(UIView *receiver,
+                                              SEL selector,
+                                              UITraitCollection *previous) {
+    if (OriginalRightNavigationTraitChanged != NULL) {
+        ((void (*)(id, SEL, id))OriginalRightNavigationTraitChanged)(
+            receiver, selector, previous);
+    }
+    UIUserInterfaceStyle style = receiver.traitCollection.userInterfaceStyle;
+    if (style != UIUserInterfaceStyleUnspecified) {
+        YTKACENavigationStyle = style;
+    }
+    if (YTKACEFeatureEnabled(YTKACEOLEDKey)) {
+        YTKACEApplyRightNavigationVisibility(receiver);
+    }
 }
 
 static void YTKACEYTImageViewLayout(UIView *receiver, SEL selector) {
@@ -290,10 +517,34 @@ void YTKACEInstallNavigationVisibilityHooks(void) {
                               @"layoutSubviews",
                               (IMP)YTKACEQTMButtonLayout,
                               &OriginalQTMButtonLayout);
+    YTKACEInstallInstanceHook(@"YTQTMButton",
+                              @"setTintColor:",
+                              (IMP)YTKACEQTMButtonSetTint,
+                              &OriginalQTMButtonSetTint);
+    YTKACEInstallInstanceHook(@"YTQTMButton",
+                              @"setImage:forState:",
+                              (IMP)YTKACEQTMButtonSetImage,
+                              &OriginalQTMButtonSetImage);
+    YTKACEInstallInstanceHook(@"UIImageView",
+                              @"setTintColor:",
+                              (IMP)YTKACENavigationImageSetTint,
+                              &OriginalNavigationImageSetTint);
+    YTKACEInstallInstanceHook(@"UIImageView",
+                              @"setImage:",
+                              (IMP)YTKACENavigationImageSetImage,
+                              &OriginalNavigationImageSetImage);
     YTKACEInstallInstanceHook(@"YTImageView",
                               @"layoutSubviews",
                               (IMP)YTKACEYTImageViewLayout,
                               &OriginalYTImageViewLayout);
+    YTKACEInstallInstanceHook(@"YTMainWindow",
+                              @"traitCollectionDidChange:",
+                              (IMP)YTKACEMainWindowTraitChanged,
+                              &OriginalMainWindowTraitChanged);
+    YTKACEInstallInstanceHook(@"YTRightNavigationButtons",
+                              @"traitCollectionDidChange:",
+                              (IMP)YTKACERightNavigationTraitChanged,
+                              &OriginalRightNavigationTraitChanged);
     YTKACEApplyNavigationWindows();
     if (!YTKACENavigationObserverInstalled) {
         YTKACENavigationObserverInstalled = YES;

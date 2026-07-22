@@ -1,6 +1,8 @@
 #import "../../YTKACE.h"
 #import "../../Runtime/Hooking.h"
 #import "../../Runtime/Preferences.h"
+#import "../Downloads/DownloadLog.h"
+#import "../Interface/NavigationVisibility.h"
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -37,11 +39,16 @@ static UIColor *YTKACEOLEDColor(id receiver, SEL selector) {
         ? nil
         : ((id (*)(id, SEL))original)(receiver, selector);
     if (!YTKACEFeatureEnabled(YTKACEOLEDKey)) return base;
+    __weak id weakReceiver = receiver;
     return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
-        return YTKACEOLEDActive(traits)
-            ? UIColor.blackColor
-            : (base == nil ? UIColor.systemBackgroundColor
-                           : [base resolvedColorWithTraitCollection:traits]);
+        if (YTKACEOLEDActive(traits)) return UIColor.blackColor;
+        id target = weakReceiver;
+        UIColor *current = target == nil || original == NULL
+            ? base
+            : ((id (*)(id, SEL))original)(target, selector);
+        return current == nil ? [UIColor.systemBackgroundColor
+            resolvedColorWithTraitCollection:traits]
+            : [current resolvedColorWithTraitCollection:traits];
     }];
 }
 
@@ -78,8 +85,19 @@ static void YTKACEAppTraitChanged(UIViewController *receiver,
     if (previous != nil &&
         ![receiver.traitCollection
             hasDifferentColorAppearanceComparedToTraitCollection:previous]) return;
+    YTKACEDownloadLog(@"appearance",
+        @"trait %@ previous=%ld current=%ld oled=%d active=%d view=%@ bg=%@",
+        NSStringFromClass(receiver.class),
+        (long)previous.userInterfaceStyle,
+        (long)receiver.traitCollection.userInterfaceStyle,
+        YTKACEFeatureEnabled(YTKACEOLEDKey),
+        YTKACEOLEDActive(receiver.traitCollection),
+        NSStringFromCGRect(receiver.view.frame),
+        receiver.view.backgroundColor);
+    if (!YTKACEFeatureEnabled(YTKACEOLEDKey)) return;
     [receiver setNeedsStatusBarAppearanceUpdate];
     [receiver.view setNeedsLayout];
+    YTKACERefreshNavigationAppearance();
     dispatch_async(dispatch_get_main_queue(), ^{
         for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
             if (![scene isKindOfClass:UIWindowScene.class] ||
@@ -89,6 +107,7 @@ static void YTKACEAppTraitChanged(UIViewController *receiver,
                 [window setNeedsLayout];
             }
         }
+        YTKACERefreshNavigationAppearance();
     });
 }
 

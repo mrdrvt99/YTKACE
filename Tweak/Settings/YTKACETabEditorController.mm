@@ -54,7 +54,8 @@ static UIImage *YTKACETabEditorIcon(NSString *token, NSString *fallback) {
     [super viewWillAppear:animated];
     [self.navigationController setNavigationBarHidden:NO animated:NO];
     YTKACEApplyAppearance(self);
-    self.tableView.backgroundColor = self.view.backgroundColor;
+    self.tableView.backgroundColor =
+        YTKACEInterfaceBackgroundColor(self.traitCollection);
     [self.tableView reloadData];
 }
 
@@ -166,7 +167,7 @@ willDisplayHeaderView:(UIView *)view
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.editingAccessoryType = UITableViewCellAccessoryNone;
     cell.textLabel.font = [UIFont systemFontOfSize:17.0];
-    cell.backgroundColor = self.view.backgroundColor;
+    cell.backgroundColor = YTKACEInterfaceBackgroundColor(self.traitCollection);
     cell.textLabel.textColor = UIColor.labelColor;
     cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
     cell.indentationLevel = 0;
