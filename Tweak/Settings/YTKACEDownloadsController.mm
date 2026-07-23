@@ -286,9 +286,10 @@ static UIAlertAction *YTKACEMenuAction(
     [self.libraryButton addTarget:self action:@selector(toggleLayout)
              forControlEvents:UIControlEventTouchUpInside];
 
-    self.controlBar = [[UIStackView alloc] initWithArrangedSubviews:@[
-        self.segmentedControl, settingsButton, self.libraryButton, self.sortButton
-    ]];
+    NSArray *controls = self.hidesSettingsButton
+        ? @[self.segmentedControl, self.libraryButton, self.sortButton]
+        : @[self.segmentedControl, settingsButton, self.libraryButton, self.sortButton];
+    self.controlBar = [[UIStackView alloc] initWithArrangedSubviews:controls];
     self.controlBar.axis = UILayoutConstraintAxisHorizontal;
     self.controlBar.spacing = 5.0;
     self.controlBar.translatesAutoresizingMaskIntoConstraints = NO;
@@ -313,7 +314,6 @@ static UIAlertAction *YTKACEMenuAction(
     [self.view addSubview:self.controlBar];
     [self.view addSubview:self.collectionView];
     [self.view addSubview:self.emptyLabel];
-    [self buildMiniPlayer];
     UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [self.controlBar.topAnchor constraintEqualToAnchor:safeArea.topAnchor constant:8.0],
@@ -450,6 +450,11 @@ static UIAlertAction *YTKACEMenuAction(
 }
 
 - (void)updateMiniPlayer {
+    if (self.miniPlayerBar == nil) {
+        self.collectionView.contentInset = UIEdgeInsetsZero;
+        self.collectionView.scrollIndicatorInsets = UIEdgeInsetsZero;
+        return;
+    }
     YTKACEDownloadPlaybackSession *session =
         YTKACEDownloadPlaybackSession.sharedSession;
     NSURL *URL = session.currentURL;

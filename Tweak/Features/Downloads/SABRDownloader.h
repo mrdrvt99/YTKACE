@@ -14,6 +14,10 @@ typedef void (^YTKACESABRCompletion)(NSURL * _Nullable videoURL,
                                     NSError * _Nullable error);
 typedef void (^YTKACEPlayerReloadCompletion)(id _Nullable playerResponse,
                                              NSError * _Nullable error);
+typedef void (^YTKACENativeRequestCompletion)(
+    NSURLRequest * _Nullable request,
+    NSInteger requestNumber,
+    NSError * _Nullable error);
 
 FOUNDATION_EXPORT void YTKACESABRSetPoToken(id _Nullable token);
 FOUNDATION_EXPORT void YTKACESABRSetNativeHeaders(
@@ -25,6 +29,10 @@ FOUNDATION_EXPORT void YTKACEPreparePlayer(NSString *videoID,
 FOUNDATION_EXPORT void YTKACEReloadPlayer(NSString * _Nullable videoID,
                                          NSString *token,
                                          YTKACEPlayerReloadCompletion completion);
+FOUNDATION_EXPORT BOOL YTKACEHasNativeOnesieSession(NSString *videoID);
+FOUNDATION_EXPORT void YTKACEBuildNativeOnesieRequest(
+    NSString *videoID,
+    YTKACENativeRequestCompletion completion);
 
 @interface YTKACESABRTask : NSObject
 - (void)cancel;

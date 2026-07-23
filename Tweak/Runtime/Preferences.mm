@@ -58,6 +58,8 @@ void YTKACERegisterDefaults(void) {
         YTKACESpeedKey: @NO,
         YTKACELoopKey: @NO,
         @"kEnableCustomDoubleTapToSkipDuration": @NO,
+        @"kEnableProfilePictureViewer": @YES,
+        @"kEnableRemoveLaunchAnimation": @NO,
         @"kEnableCustomDoubleTapToSkipChnges": @10.0,
         @"kSeekDuration": @10.0,
         @"kVolumeSide": @2,

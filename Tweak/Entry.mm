@@ -8,7 +8,7 @@
 #define YTKACE_COMBINED_SABR 0
 #endif
 
-NSString * const YTKACEVersion = @"0.6.7";
+NSString * const YTKACEVersion = @"0.6.8";
 
 static void YTKACEInstallModules(void) {
     YTKACEInstallSideloadCompatibilityHooks();
@@ -16,12 +16,14 @@ static void YTKACEInstallModules(void) {
     YTKACEInstallAdsHooks();
     YTKACEInstallSponsorBlockHooks();
     YTKACEInstallOLEDHooks();
+    YTKACEInstallStartupHooks();
     YTKACEInstallPremiumLogoHooks();
     YTKACEInstallBackgroundPlaybackHooks();
     YTKACEInstallSpeedHooks();
     YTKACEInstallLoopHooks();
     YTKACEInstallPiPHooks();
     YTKACEInstallDownloadHooks();
+    YTKACEInstallGlobalDownloadMiniPlayer();
     YTKACEInstallDoubleTapHooks();
     YTKACEInstallFixPlaybackHooks();
     YTKACEInstallStreamingHooks();
@@ -34,6 +36,7 @@ static void YTKACEInstallModules(void) {
     YTKACEInstallNavigationVisibilityHooks();
     YTKACEInstallMiscellaneousHooks();
     YTKACEInstallCopyCommentHooks();
+    YTKACEInstallProfilePictureHooks();
     YTKACEInstallSettingsEntryHooks();
     YTKACEInstallNativeSettingsHooks();
 }
@@ -45,9 +48,5 @@ static void YTKACEEntryPoint(void) {
         YTKACERegisterDefaults();
         YTKACEScheduleFirstLaunch();
         YTKACEInstallModules();
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            YTKACEInstallModules();
-        });
     }
 }

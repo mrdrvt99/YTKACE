@@ -66,7 +66,7 @@ See the full [feature matrix](docs/FEATURE_MATRIX.md).
 - **iOS:** 16.0 and newer
 - **Architecture:** arm64
 - **Latest confirmed YouTube:** 21.29.3
-- **YTKACE:** 0.6.7
+- **YTKACE:** 0.6.8
 
 The same injected IPA can be installed with TrollStore, an AppSync-compatible installer, or a developer-certificate sideloader.
 

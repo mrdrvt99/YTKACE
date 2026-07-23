@@ -28,7 +28,9 @@ YTKACE_FILES = \
 	Tweak/Features/Downloads/DownloadHooks.mm \
 	Tweak/Features/Downloads/YTKACEDownloadPlayerController.mm \
 	Tweak/Features/Downloads/YTKACEAudioPlayerController.mm \
+	Tweak/Features/Downloads/GlobalDownloadMiniPlayer.mm \
 	Tweak/Features/Appearance/OLEDHooks.mm \
+	Tweak/Features/Appearance/StartupHooks.mm \
 	Tweak/Features/Appearance/PremiumLogoHooks.mm \
 	Tweak/Features/Playback/BackgroundPlaybackHooks.mm \
 	Tweak/Features/Playback/PiPControls.mm \
@@ -48,6 +50,7 @@ YTKACE_FILES = \
 	Tweak/Features/Interface/ContentVisibilityHooks.mm \
 	Tweak/Features/Interface/MiscellaneousHooks.mm \
 	Tweak/Features/Interface/CopyCommentHooks.mm \
+	Tweak/Features/Interface/ProfilePictureViewer.mm \
 	Tweak/Features/Interface/NavigationVisibility.mm \
 	Tweak/Settings/SettingsEntry.mm \
 	Tweak/Settings/NativeSettingsEntry.mm \

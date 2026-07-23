@@ -502,8 +502,15 @@ static NSData *YTKACESABRClientInfo(void) {
 @property(nonatomic, assign) int64_t activeBaseAudioBytes;
 @property(nonatomic, assign) int64_t activeBaseVideoBytes;
 @property(nonatomic, assign) int64_t activeNetworkBytes;
+@property(nonatomic, assign) BOOL requestBuildInFlight;
+@property(nonatomic, assign) BOOL nativeRefreshInFlight;
+@property(nonatomic, assign) NSInteger nativeRefreshAttempts;
+@property(nonatomic, assign) NSInteger nativeBuildFailures;
 - (void)start;
 - (void)cancel;
+- (void)sendPreparedRequest:(NSURLRequest * _Nullable)nativeRequest
+        nativeRequestNumber:(NSInteger)nativeRequestNumber;
+- (void)refreshNativeSession:(NSString *)reason;
 - (BOOL)restartStalledSession:(NSString *)reason;
 - (BOOL)switchToSequentialFallback:(NSString *)reason;
 @end
@@ -711,14 +718,16 @@ static NSData *YTKACESABRClientInfo(void) {
     return request;
 }
 
-- (NSURL *)requestURL {
-    NSURLComponents *components = [NSURLComponents componentsWithString:self.serverURL];
+- (NSURL *)requestURLForBaseURL:(NSURL *)baseURL
+                  requestNumber:(NSInteger)requestNumber {
+    NSURLComponents *components = [NSURLComponents componentsWithURL:baseURL
+        resolvingAgainstBaseURL:NO];
     NSMutableArray *items = [NSMutableArray array];
     for (NSURLQueryItem *item in components.queryItems ?: @[]) {
         if (![item.name isEqualToString:@"rn"]) [items addObject:item];
     }
     [items addObject:[NSURLQueryItem queryItemWithName:@"rn"
-        value:[NSString stringWithFormat:@"%ld", (long)self.requestNumber]]];
+        value:[NSString stringWithFormat:@"%ld", (long)requestNumber]]];
     components.queryItems = items;
     return components.URL;
 }
@@ -780,22 +789,24 @@ static NSData *YTKACESABRClientInfo(void) {
     self.contexts = [NSMutableDictionary dictionary];
     NSURLSessionConfiguration *configuration = NSURLSessionConfiguration.ephemeralSessionConfiguration;
     configuration.timeoutIntervalForRequest = 60.0;
-    configuration.timeoutIntervalForResource = 300.0;
+    configuration.timeoutIntervalForResource = 3600.0;
     configuration.waitsForConnectivity = YES;
     configuration.allowsCellularAccess = YES;
     configuration.allowsExpensiveNetworkAccess = YES;
     configuration.allowsConstrainedNetworkAccess = YES;
-    configuration.networkServiceType = NSURLNetworkServiceTypeAVStreaming;
+    configuration.networkServiceType = (NSURLRequestNetworkServiceType)8;
     configuration.HTTPMaximumConnectionsPerHost = 4;
     NSOperationQueue *queue = [NSOperationQueue new];
     queue.maxConcurrentOperationCount = 1;
-    queue.qualityOfService = NSQualityOfServiceUserInitiated;
+    queue.qualityOfService = NSQualityOfServiceUtility;
     self.session = [NSURLSession sessionWithConfiguration:configuration
         delegate:self delegateQueue:queue];
     NSString *serverHost = [NSURL URLWithString:self.serverURL].host ?: @"unknown";
-    YTKACEDownloadLog(self.identifier, @"SABR start video=%ld audio=%ld server=%@ mode=%@",
+    YTKACEDownloadLog(self.identifier,
+        @"SABR start video=%ld audio=%ld server=%@ mode=%@ connections=%ld native=%d",
         (long)self.video.option.itag, (long)self.audio.option.itag, serverHost,
-        self.combinedMode ? @"combined" : @"sequential");
+        self.combinedMode ? @"combined" : @"sequential", 4L,
+        YTKACEHasNativeOnesieSession(self.videoID));
     YTKACEDownloadLog(self.identifier,
         @"formats video=%ld lmt=%ld xtags=%@ quality=%@ mime=%@ audio=%ld lmt=%ld xtags=%@",
         (long)self.video.option.itag, (long)self.video.option.lastModified,
@@ -808,12 +819,30 @@ static NSData *YTKACESABRClientInfo(void) {
 }
 
 - (void)sendRequest {
-    if (self.finished) return;
+    if (self.finished || self.requestBuildInFlight) return;
     if (self.requestNumber > 10000) {
         [self fail:[self error:@"The SABR stream did not finish." code:3]];
         return;
     }
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[self requestURL]];
+    [self sendPreparedRequest:nil nativeRequestNumber:self.requestNumber];
+}
+
+- (void)sendPreparedRequest:(NSURLRequest *)nativeRequest
+        nativeRequestNumber:(NSInteger)nativeRequestNumber {
+    if (self.finished) return;
+    (void)nativeRequest;
+    (void)nativeRequestNumber;
+    NSInteger logicalRequestNumber = self.requestNumber;
+    NSInteger wireRequestNumber = logicalRequestNumber;
+    NSURL *baseURL = [NSURL URLWithString:self.serverURL];
+    if (baseURL == nil) {
+        [self fail:[self error:@"SABR setup did not provide a request URL." code:2]];
+        return;
+    }
+    NSMutableURLRequest *request =
+        [NSMutableURLRequest requestWithURL:baseURL];
+    request.URL = [self requestURLForBaseURL:baseURL
+        requestNumber:wireRequestNumber];
     request.HTTPMethod = @"POST";
     request.HTTPBody = [self requestBody];
     NSDictionary<NSString *, NSString *> *nativeHeaders =
@@ -828,11 +857,12 @@ static NSData *YTKACESABRClientInfo(void) {
             [lower isEqualToString:@"accept-encoding"]) continue;
         [request setValue:nativeHeaders[key] forHTTPHeaderField:key];
     }
+    [request setValue:nil forHTTPHeaderField:@"Content-Length"];
+    [request setValue:nil forHTTPHeaderField:@"Content-Encoding"];
     [request setValue:@"application/x-protobuf" forHTTPHeaderField:@"Content-Type"];
     [request setValue:@"identity" forHTTPHeaderField:@"Accept-Encoding"];
     [request setValue:@"application/vnd.yt-ump" forHTTPHeaderField:@"Accept"];
-    NSInteger requestNumber = self.requestNumber;
-    self.activeRequestNumber = requestNumber;
+    self.activeRequestNumber = logicalRequestNumber;
     self.activeRequestStart = NSDate.date.timeIntervalSinceReferenceDate;
     self.lastLiveProgress = 0.0;
     self.activeBaseAudioBytes = self.audio.downloadedBytes;
@@ -840,13 +870,52 @@ static NSData *YTKACESABRClientInfo(void) {
     self.activeNetworkBytes = 0;
     self.activeResponseData = [NSMutableData data];
     self.activeResponse = nil;
-    YTKACEDownloadLog(self.identifier, @"request %ld url=%@ body=%lu",
-        (long)requestNumber, request.URL.host, (unsigned long)request.HTTPBody.length);
+    YTKACEDownloadLog(self.identifier,
+        @"request logical=%ld wire=%ld source=%@ url=%@ body=%lu",
+        (long)logicalRequestNumber, (long)wireRequestNumber,
+        nativeHeaders.count != 0 ? @"native-session" : @"raw", request.URL.host,
+        (unsigned long)request.HTTPBody.length);
     self.requestNumber += 1;
     NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request];
-    task.taskDescription = [NSString stringWithFormat:@"%ld", (long)requestNumber];
+    task.taskDescription = [NSString stringWithFormat:@"%ld",
+        (long)logicalRequestNumber];
     task.priority = NSURLSessionTaskPriorityHigh;
     [task resume];
+}
+
+- (void)refreshNativeSession:(NSString *)reason {
+    if (self.finished) return;
+    if (self.nativeRefreshInFlight) return;
+    if (self.nativeRefreshAttempts >= 3) {
+        [self retryOrFail:[self error:
+            @"YouTube could not refresh the native download session." code:9]];
+        return;
+    }
+    self.nativeRefreshInFlight = YES;
+    self.nativeRefreshAttempts += 1;
+    YTKACEDownloadLog(self.identifier, @"native refresh attempt=%ld reason=%@",
+        (long)self.nativeRefreshAttempts, reason ?: @"authorization");
+    __weak YTKACESABRSession *weakSelf = self;
+    YTKACEPreparePlayer(self.videoID, ^(id playerResponse, NSError *error) {
+        YTKACESABRSession *strongSelf = weakSelf;
+        if (strongSelf == nil || strongSelf.finished) return;
+        strongSelf.nativeRefreshInFlight = NO;
+        NSError *applyError = nil;
+        BOOL applied = playerResponse != nil &&
+            [strongSelf applyPlayerResponse:playerResponse error:&applyError];
+        if (!applied) {
+            NSError *finalError = error ?: applyError ?: [strongSelf error:
+                @"YouTube could not refresh the native download session." code:9];
+            [strongSelf retryOrFail:finalError];
+            return;
+        }
+        strongSelf.retryCount = 0;
+        strongSelf.stalledRequests = 0;
+        strongSelf.playbackCookie = nil;
+        [strongSelf.contexts removeAllObjects];
+        [strongSelf.headers removeAllObjects];
+        [strongSelf sendRequest];
+    });
 }
 
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask
@@ -920,9 +989,16 @@ static NSData *YTKACESABRClientInfo(void) {
         (long)self.activeRequestNumber, (long)http.statusCode, (unsigned long)data.length,
         elapsed, megabytesPerSecond, error.localizedDescription ?: @"none");
     if (error != nil || http.statusCode < 200 || http.statusCode >= 300 || data.length == 0) {
-        [self retryOrFail:error ?: [self error:
+        NSError *requestError = error ?: [self error:
             [NSString stringWithFormat:@"SABR returned HTTP %ld.", (long)http.statusCode]
-            code:4]];
+            code:4];
+        if ((http.statusCode == 401 || http.statusCode == 403 ||
+             http.statusCode == 409 || http.statusCode == 410) &&
+            YTKACEHasNativeOnesieSession(self.videoID)) {
+            [self refreshNativeSession:requestError.localizedDescription];
+        } else {
+            [self retryOrFail:requestError];
+        }
         return;
     }
     [self processResponse:data];
@@ -1187,7 +1263,8 @@ static NSData *YTKACESABRClientInfo(void) {
         YTKACEDownloadLog(self.identifier, @"reload requested attempt=%ld token=%lu",
             (long)self.reloadCount, (unsigned long)reloadToken.length);
         __weak YTKACESABRSession *weakSelf = self;
-        YTKACEReloadPlayer(nil, reloadToken, ^(id playerResponse, NSError *error) {
+        YTKACEReloadPlayer(self.videoID, reloadToken,
+            ^(id playerResponse, NSError *error) {
             YTKACESABRSession *strongSelf = weakSelf;
             if (strongSelf == nil || strongSelf.finished) return;
             strongSelf.reloadInFlight = NO;
@@ -1211,7 +1288,7 @@ static NSData *YTKACESABRClientInfo(void) {
                 [NSURL URLWithString:strongSelf.serverURL].host,
                 (unsigned long)strongSelf.ustreamerConfig.length);
             [strongSelf sendRequest];
-        });
+            });
         return;
     }
     if (attestation || rejected) {
@@ -1224,7 +1301,11 @@ static NSData *YTKACESABRClientInfo(void) {
             code:attestation ? 7 : 6];
         if (self.attestationRetries < 3) {
             self.attestationRetries += 1;
-            [self retryOrFail:error];
+            if (YTKACEHasNativeOnesieSession(self.videoID)) {
+                [self refreshNativeSession:message];
+            } else {
+                [self retryOrFail:error];
+            }
         } else {
             [self fail:error];
         }
@@ -1275,6 +1356,7 @@ static NSData *YTKACESABRClientInfo(void) {
         self.stalledRequests = 0;
         self.retryCount = 0;
         self.stallRecoveryCount = 0;
+        self.nativeRefreshAttempts = 0;
     }
     YTKACEDownloadLog(self.identifier,
         @"progress audio=%.3f/%lld video=%.3f/%lld bytes=%lld+%lld stalled=%ld",
