@@ -84,7 +84,6 @@ void YTKACERegisterDefaults(void) {
         @"kTabOrder": @[@"home", @"shorts", @"subscriptions", @"library", @"ytkace"]
     }];
     [YTKACEDefaults() setBool:YES forKey:YTKACEMasterEnabledKey];
-    [YTKACEDefaults() removeObjectForKey:@"YTKACEDebugPivot"];
     if ([YTKACEDefaults() boolForKey:@"clearonstartup"]) {
         NSDate *lastClear = [YTKACEDefaults() objectForKey:@"YTKACELastCacheClearDate"];
         if (![lastClear isKindOfClass:NSDate.class] ||
@@ -135,6 +134,30 @@ BOOL YTKACEOLEDActive(UITraitCollection *traits) {
     }
     current = current ?: UIScreen.mainScreen.traitCollection;
     return current.userInterfaceStyle == UIUserInterfaceStyleDark;
+}
+
+UIColor *YTKACEInterfaceBackgroundColor(UITraitCollection *traits) {
+    if (YTKACEOLEDActive(traits)) return UIColor.blackColor;
+    UIUserInterfaceStyle style = traits.userInterfaceStyle;
+    if (style == UIUserInterfaceStyleUnspecified) {
+        style = UIScreen.mainScreen.traitCollection.userInterfaceStyle;
+    }
+    return style == UIUserInterfaceStyleDark
+        ? [UIColor colorWithWhite:0.075 alpha:1.0]
+        : UIColor.whiteColor;
+}
+
+UIColor *YTKACEInterfaceSurfaceColor(UITraitCollection *traits) {
+    if (YTKACEOLEDActive(traits)) {
+        return [UIColor colorWithWhite:0.10 alpha:1.0];
+    }
+    UIUserInterfaceStyle style = traits.userInterfaceStyle;
+    if (style == UIUserInterfaceStyleUnspecified) {
+        style = UIScreen.mainScreen.traitCollection.userInterfaceStyle;
+    }
+    return style == UIUserInterfaceStyleDark
+        ? [UIColor colorWithWhite:0.16 alpha:1.0]
+        : [UIColor colorWithWhite:0.95 alpha:1.0];
 }
 
 BOOL YTKACESponsorBlockEnabled(void) {

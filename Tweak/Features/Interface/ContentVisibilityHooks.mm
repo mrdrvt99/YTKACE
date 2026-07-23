@@ -8,11 +8,13 @@
 
 static IMP OriginalDisplayViewDidMove;
 static IMP OriginalDisplayViewSetIdentifier;
-static IMP OriginalDisplaySections;
 static IMP OriginalAddSections;
+static IMP OriginalSectionControllers;
 static const void *YTKACEContentHiddenAssociation = &YTKACEContentHiddenAssociation;
 static BOOL YTKACEContentContains(NSString *token,
                                   NSArray<NSString *> *needles);
+static id YTKACEContentValue(id object, NSString *key);
+static BOOL YTKACESectionIsShortsShelf(id section);
 
 static id YTKACEContentValue(id object, NSString *key) {
     if (object == nil || key.length == 0) {
@@ -37,7 +39,8 @@ static BOOL YTKACESectionIsShortsShelf(id section) {
         stringByReplacingOccurrencesOfString:@"." withString:@"_"];
     if (YTKACEContentContains(description, @[
         @"shorts_shelf_eml", @"shorts_shelf", @"reel_shelf",
-        @"shorts_lockup_shelf"
+        @"shorts_lockup_shelf", @"shortsshelfrenderer",
+        @"reelshelfrenderer", @"shortslockupviewmodel"
     ])) {
         return YES;
     }
@@ -75,6 +78,13 @@ static NSArray *YTKACEFilteredFeedSections(NSArray *sections) {
         }
     }
     return filtered;
+}
+
+static id YTKACESectionControllers(id receiver, SEL selector,
+                                   NSArray *sections, id reloadMap) {
+    if (OriginalSectionControllers == NULL) return nil;
+    return ((id (*)(id, SEL, id, id))OriginalSectionControllers)(
+        receiver, selector, YTKACEFilteredFeedSections(sections), reloadMap);
 }
 
 static BOOL YTKACEContentContains(NSString *token,
@@ -250,20 +260,6 @@ static void YTKACEDisplayViewSetIdentifier(UIView *receiver,
     YTKACEApplyContentVisibility(receiver);
 }
 
-static void YTKACEDisplaySections(id receiver, SEL selector, id renderer) {
-    @try {
-        NSArray *sections = YTKACEContentValue(receiver, @"_sectionRenderers");
-        NSArray *filtered = YTKACEFilteredFeedSections(sections);
-        if (filtered != sections) {
-            [receiver setValue:[filtered mutableCopy] forKey:@"_sectionRenderers"];
-        }
-    } @catch (__unused NSException *exception) {
-    }
-    if (OriginalDisplaySections != NULL) {
-        ((void (*)(id, SEL, id))OriginalDisplaySections)(receiver, selector, renderer);
-    }
-}
-
 static void YTKACEAddSections(id receiver, SEL selector, NSArray *sections) {
     if (OriginalAddSections != NULL) {
         ((void (*)(id, SEL, id))OriginalAddSections)(
@@ -281,11 +277,11 @@ void YTKACEInstallContentVisibilityHooks(void) {
                               (IMP)YTKACEDisplayViewSetIdentifier,
                               &OriginalDisplayViewSetIdentifier);
     YTKACEInstallInstanceHook(@"YTInnerTubeCollectionViewController",
-                              @"displaySectionsWithReloadingSectionControllerByRenderer:",
-                              (IMP)YTKACEDisplaySections,
-                              &OriginalDisplaySections);
-    YTKACEInstallInstanceHook(@"YTInnerTubeCollectionViewController",
                               @"addSectionsFromArray:",
                               (IMP)YTKACEAddSections,
                               &OriginalAddSections);
+    YTKACEInstallInstanceHook(@"YTInnerTubeCollectionViewController",
+                              @"sectionControllersForSectionRenderers:reloadingSectionControllerByRenderer:",
+                              (IMP)YTKACESectionControllers,
+                              &OriginalSectionControllers);
 }

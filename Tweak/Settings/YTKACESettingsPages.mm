@@ -166,14 +166,14 @@ static NSDictionary *YTKACEActionDetail(NSString *title,
 
 static UIColor *YTKACESettingsBackground(void) {
     return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
-        return YTKACEOLEDActive(traits)
-            ? UIColor.blackColor
-            : UIColor.systemBackgroundColor;
+        return YTKACEInterfaceBackgroundColor(traits);
     }];
 }
 
 static UIColor *YTKACESettingsCellBackground(void) {
-    return YTKACESettingsBackground();
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        return YTKACEInterfaceBackgroundColor(traits);
+    }];
 }
 
 BOOL YTKACEPreferenceNeedsRestart(NSString *key) {
@@ -844,20 +844,20 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     overlay.alpha = 0.0;
 
     UIView *card = [UIView new];
-    card.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.96];
+    card.backgroundColor = YTKACEInterfaceSurfaceColor(self.traitCollection);
     card.layer.cornerRadius = 12.0;
     card.layer.masksToBounds = YES;
     card.translatesAutoresizingMaskIntoConstraints = NO;
 
     UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc]
         initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-    spinner.color = UIColor.whiteColor;
+    spinner.color = UIColor.labelColor;
     spinner.translatesAutoresizingMaskIntoConstraints = NO;
     [spinner startAnimating];
 
     UILabel *label = [UILabel new];
     label.text = message.length == 0 ? @"Please Wait..." : message;
-    label.textColor = UIColor.whiteColor;
+    label.textColor = UIColor.labelColor;
     label.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
     label.textAlignment = NSTextAlignmentCenter;
     label.translatesAutoresizingMaskIntoConstraints = NO;
