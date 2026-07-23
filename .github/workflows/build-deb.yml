@@ -36,12 +36,19 @@ jobs:
           name: YTKACE-deb
           path: packages
 
+      - name: Get version
+        id: version
+        run: |
+          FILE=$(ls packages/*.deb | head -n1)
+          VERSION=$(basename "$FILE" | sed -E 's/^[^_]+_([0-9]+\.[0-9]+\.[0-9]+)_.*$/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
           draft: false
-          tag_name: deb-${{ github.run_number }}
-          name: Deb ${{ github.run_number }}
+          tag_name: deb-${{ steps.version.outputs.version }}
+          name: YTKACE ${{ steps.version.outputs.version }}
           files: packages/*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
