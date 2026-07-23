@@ -51,7 +51,9 @@ static NSString *YTKACEShortsHookKey(Class cls, SEL selector) {
                                       NSStringFromSelector(selector)];
 }
 
-static IMP YTKACEShortsOriginal(id receiver, SEL selector) {
+static IMP YTKACEShortsOriginal(id receiver, SEL selector,
+                                NSUInteger ordinal) {
+    NSUInteger candidate = 0;
     for (Class cls = object_getClass(receiver); cls != Nil;
          cls = class_getSuperclass(cls)) {
         IMP original = (IMP)[YTKACEShortsOriginals[
@@ -61,10 +63,33 @@ static IMP YTKACEShortsOriginal(id receiver, SEL selector) {
             original != (IMP)YTKACEShortsControllerLayout &&
             original != (IMP)YTKACEPausedLayout &&
             original != (IMP)YTKACEInteractiveStickerLayout) {
-            return original;
+            if (candidate == ordinal) {
+                return original;
+            }
+            candidate++;
         }
     }
     return NULL;
+}
+
+static void YTKACEInvokeShortsOriginal(id receiver, SEL selector) {
+    NSMutableDictionary *threadState = NSThread.currentThread.threadDictionary;
+    NSString *depthKey = [NSString stringWithFormat:
+        @"YTKACE.Shorts.%p.%@", receiver, NSStringFromSelector(selector)];
+    NSUInteger depth = [threadState[depthKey] unsignedIntegerValue];
+    IMP original = YTKACEShortsOriginal(receiver, selector, depth);
+    if (original == NULL) return;
+
+    threadState[depthKey] = @(depth + 1);
+    @try {
+        ((void (*)(id, SEL))original)(receiver, selector);
+    } @finally {
+        if (depth == 0) {
+            [threadState removeObjectForKey:depthKey];
+        } else {
+            threadState[depthKey] = @(depth);
+        }
+    }
 }
 
 static Method YTKACEShortsDirectMethod(Class cls, SEL selector) {
@@ -289,36 +314,24 @@ static void YTKACEConfigureReelView(UIView *receiver, BOOL showDownload) {
 }
 
 static void YTKACEReelLayout(UIView *receiver, SEL selector) {
-    IMP original = YTKACEShortsOriginal(receiver, selector);
-    if (original != NULL) {
-        ((void (*)(id, SEL))original)(receiver, selector);
-    }
+    YTKACEInvokeShortsOriginal(receiver, selector);
     YTKACEConfigureReelView(receiver, NO);
 }
 
 static void YTKACEShortsControllerLayout(UIViewController *receiver,
                                          SEL selector) {
-    IMP original = YTKACEShortsOriginal(receiver, selector);
-    if (original != NULL) {
-        ((void (*)(id, SEL))original)(receiver, selector);
-    }
+    YTKACEInvokeShortsOriginal(receiver, selector);
     YTKACEConfigureReelView(receiver.view, YES);
 }
 
 static void YTKACEPausedLayout(UIView *receiver, SEL selector) {
-    IMP original = YTKACEShortsOriginal(receiver, selector);
-    if (original != NULL) {
-        ((void (*)(id, SEL))original)(receiver, selector);
-    }
+    YTKACEInvokeShortsOriginal(receiver, selector);
     BOOL hidden = YTKACEFeatureEnabled(@"kEnableBlockShortsOverlays");
     YTKACESetShortsHidden(receiver, hidden);
 }
 
 static void YTKACEInteractiveStickerLayout(UIView *receiver, SEL selector) {
-    IMP original = YTKACEShortsOriginal(receiver, selector);
-    if (original != NULL) {
-        ((void (*)(id, SEL))original)(receiver, selector);
-    }
+    YTKACEInvokeShortsOriginal(receiver, selector);
     NSString *token = [NSString stringWithFormat:@"%@ %@ %@",
         NSStringFromClass(receiver.class).lowercaseString,
         receiver.accessibilityIdentifier.lowercaseString ?: @"",
