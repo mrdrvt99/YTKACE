@@ -49,7 +49,173 @@ static id YTKACELastRequestProperties;
 static NSMutableDictionary<NSString *, NSArray *> *YTKACEPlayerRequests;
 static NSMutableDictionary<NSString *, id> *YTKACEPlaybackRequests;
 static NSInteger YTKACEPlayerHookAttempts;
+static NSString *YTKACELastCapturedVideoID;
 static NSString *YTKACERequestVideoID(id request);
+static id YTKACECopyObject(id object);
+
+static NSURLRequest *YTKACEURLRequestFromObject(id object) {
+    if ([object isKindOfClass:NSURLRequest.class]) return object;
+    SEL builder = NSSelectorFromString(@"buildURLRequest");
+    if ([object respondsToSelector:builder]) {
+        id result = ((id (*)(id, SEL))objc_msgSend)(object, builder);
+        if ([result isKindOfClass:NSURLRequest.class]) return result;
+    }
+    return nil;
+}
+
+@interface YTKACEOnesieSessionState : NSObject
+@property(nonatomic, strong) id factory;
+@property(nonatomic, strong) id playerRequest;
+@property(nonatomic, strong, nullable) id authorization;
+@property(nonatomic, strong) id dataLoader;
+@property(nonatomic, strong) id context;
+@property(nonatomic, strong) id cryptor;
+@property(nonatomic, copy) NSString *videoID;
+@property(nonatomic, assign) NSInteger observedRequestNumber;
+@property(nonatomic, assign) NSInteger nextRequestNumber;
+@property(nonatomic, assign) BOOL asynchronous;
+@property(nonatomic, strong) NSDate *capturedAt;
+@end
+
+@implementation YTKACEOnesieSessionState
+@end
+
+static NSMutableDictionary<NSString *, YTKACEOnesieSessionState *> *
+    YTKACEOnesieSessions;
+static YTKACEOnesieSessionState *YTKACELastOnesieSession;
+
+static void YTKACEPruneOnesieSessions(void) {
+    NSDate *cutoff = [NSDate dateWithTimeIntervalSinceNow:-900.0];
+    NSMutableArray<NSString *> *expired = [NSMutableArray array];
+    for (NSString *key in YTKACEOnesieSessions) {
+        YTKACEOnesieSessionState *state = YTKACEOnesieSessions[key];
+        if ([state.capturedAt compare:cutoff] == NSOrderedAscending) {
+            [expired addObject:key];
+        }
+    }
+    [YTKACEOnesieSessions removeObjectsForKeys:expired];
+    if (YTKACEOnesieSessions.count <= 16) return;
+    NSArray<NSString *> *keys = [YTKACEOnesieSessions keysSortedByValueUsingComparator:
+        ^NSComparisonResult(YTKACEOnesieSessionState *left,
+                            YTKACEOnesieSessionState *right) {
+            return [left.capturedAt compare:right.capturedAt];
+        }];
+    NSUInteger removeCount = YTKACEOnesieSessions.count - 16;
+    [YTKACEOnesieSessions removeObjectsForKeys:
+        [keys subarrayWithRange:NSMakeRange(0, removeCount)]];
+}
+
+static void YTKACECaptureOnesieSession(id factory,
+                                       id playerRequest,
+                                       id authorization,
+                                       id dataLoader,
+                                       id context,
+                                       id cryptor,
+                                       NSInteger requestNumber,
+                                       BOOL asynchronous) {
+    if (factory == nil || playerRequest == nil || dataLoader == nil ||
+        context == nil || cryptor == nil) {
+        return;
+    }
+    NSString *videoID = YTKACERequestVideoID(playerRequest);
+    if (videoID.length == 0) videoID = YTKACELastCapturedVideoID;
+    YTKACEOnesieSessionState *state = [YTKACEOnesieSessionState new];
+    state.factory = factory;
+    state.playerRequest = YTKACECopyObject(playerRequest);
+    state.authorization = YTKACECopyObject(authorization);
+    state.dataLoader = dataLoader;
+    state.context = context;
+    state.cryptor = cryptor;
+    state.videoID = videoID ?: @"";
+    state.observedRequestNumber = requestNumber;
+    state.nextRequestNumber = requestNumber + 1;
+    state.asynchronous = asynchronous;
+    state.capturedAt = NSDate.date;
+    @synchronized (YTKACESABRDownloader.class) {
+        if (YTKACEOnesieSessions == nil) {
+            YTKACEOnesieSessions = [NSMutableDictionary dictionary];
+        }
+        YTKACELastOnesieSession = state;
+        if (videoID.length != 0) YTKACEOnesieSessions[videoID] = state;
+        YTKACEPruneOnesieSessions();
+    }
+    YTKACEDownloadLog(@"native", @"session video=%@ rn=%ld mode=%@",
+        videoID ?: @"unknown", (long)requestNumber,
+        asynchronous ? @"async" : @"sync");
+}
+
+static YTKACEOnesieSessionState *YTKACEOnesieSessionForVideo(
+    NSString *videoID) {
+    @synchronized (YTKACESABRDownloader.class) {
+        YTKACEPruneOnesieSessions();
+        YTKACEOnesieSessionState *state = YTKACEOnesieSessions[videoID];
+        if (state != nil) return state;
+        if (YTKACELastOnesieSession.videoID.length == 0 ||
+            [YTKACELastOnesieSession.videoID isEqualToString:videoID]) {
+            return YTKACELastOnesieSession;
+        }
+        return nil;
+    }
+}
+
+BOOL YTKACEHasNativeOnesieSession(NSString *videoID) {
+    return YTKACEOnesieSessionForVideo(videoID) != nil;
+}
+
+void YTKACEBuildNativeOnesieRequest(
+    NSString *videoID,
+    YTKACENativeRequestCompletion completion) {
+    YTKACEOnesieSessionState *state = YTKACEOnesieSessionForVideo(videoID);
+    if (state == nil) {
+        completion(nil, NSNotFound, [NSError errorWithDomain:@"YTKACEOnesie"
+            code:1 userInfo:@{NSLocalizedDescriptionKey:
+                @"No native Onesie session is available."}]);
+        return;
+    }
+    NSInteger requestNumber = 0;
+    @synchronized (YTKACESABRDownloader.class) {
+        requestNumber = MAX(state.nextRequestNumber,
+            state.observedRequestNumber + 1);
+        state.nextRequestNumber = requestNumber + 1;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (state.asynchronous && OriginalOnesieRequestAsync != NULL) {
+            void (^nativeCompletion)(id, NSError *) = ^(id result, NSError *error) {
+                NSURLRequest *request = YTKACEURLRequestFromObject(result);
+                if (request != nil) YTKACESABRSetNativeRequest(request);
+                completion(request, requestNumber, error);
+            };
+            ((void (*)(id, SEL, id, id, id, id, id, NSInteger, id))
+                OriginalOnesieRequestAsync)(
+                    state.factory,
+                    NSSelectorFromString(
+                        @"onesieRequestForPlayerRequest:authorization:dataLoader:"
+                         "context:cryptor:requestNumber:completionHandler:"),
+                    YTKACECopyObject(state.playerRequest), state.authorization,
+                    state.dataLoader, state.context, state.cryptor,
+                    requestNumber, nativeCompletion);
+            return;
+        }
+        if (OriginalOnesieRequest != NULL) {
+            NSError *error = nil;
+            id result = ((id (*)(id, SEL, id, id, id, id, NSInteger, NSError **))
+                OriginalOnesieRequest)(
+                    state.factory,
+                    NSSelectorFromString(
+                        @"onesieRequestForPlayerRequest:dataLoader:context:"
+                         "cryptor:requestNumber:error:"),
+                    YTKACECopyObject(state.playerRequest), state.dataLoader,
+                    state.context, state.cryptor, requestNumber, &error);
+            NSURLRequest *request = YTKACEURLRequestFromObject(result);
+            if (request != nil) YTKACESABRSetNativeRequest(request);
+            completion(request, requestNumber, error);
+            return;
+        }
+        completion(nil, requestNumber, [NSError errorWithDomain:@"YTKACEOnesie"
+            code:2 userInfo:@{NSLocalizedDescriptionKey:
+                @"YouTube's native Onesie factory is unavailable."}]);
+    });
+}
 
 static id YTKACEOnesieRequest(id receiver,
                               SEL selector,
@@ -64,12 +230,15 @@ static id YTKACEOnesieRequest(id receiver,
             receiver, selector, playerRequest, dataLoader, context, cryptor,
             requestNumber, error)
         : nil;
-    if ([result isKindOfClass:NSURLRequest.class]) {
-        NSURLRequest *request = result;
+    NSURLRequest *builtRequest = YTKACEURLRequestFromObject(result);
+    if (builtRequest != nil) {
+        NSURLRequest *request = builtRequest;
         YTKACESABRSetNativeRequest(request);
         YTKACEDownloadLog(@"native", @"request host=%@ bytes=%lu",
             request.URL.host, (unsigned long)request.HTTPBody.length);
     }
+    YTKACECaptureOnesieSession(receiver, playerRequest, nil, dataLoader,
+        context, cryptor, requestNumber, NO);
     return result;
 }
 
@@ -83,12 +252,15 @@ static void YTKACEOnesieRequestAsync(id receiver,
                                      NSInteger requestNumber,
                                      void (^completion)(id, NSError *)) {
     void (^wrapped)(id, NSError *) = ^(id result, NSError *error) {
-        if ([result isKindOfClass:NSURLRequest.class]) {
-            NSURLRequest *request = result;
+        NSURLRequest *builtRequest = YTKACEURLRequestFromObject(result);
+        if (builtRequest != nil) {
+            NSURLRequest *request = builtRequest;
             YTKACESABRSetNativeRequest(request);
             YTKACEDownloadLog(@"native", @"request host=%@ bytes=%lu",
                 request.URL.host, (unsigned long)request.HTTPBody.length);
         }
+        YTKACECaptureOnesieSession(receiver, playerRequest, authorization,
+            dataLoader, context, cryptor, requestNumber, YES);
         if (completion != nil) completion(result, error);
     };
     if (OriginalOnesieRequestAsync != NULL) {
@@ -105,13 +277,8 @@ static void YTKACEOnesieRequestCompletion(id receiver,
     YTKACEDownloadLog(@"native", @"completion request=%@ error=%@",
         request ? NSStringFromClass([request class]) : @"nil",
         error ? NSStringFromClass([error class]) : @"nil");
-    id builtRequest = request;
-    SEL builder = NSSelectorFromString(@"buildURLRequest");
-    if (![builtRequest isKindOfClass:NSURLRequest.class] &&
-        [builtRequest respondsToSelector:builder]) {
-        builtRequest = ((id (*)(id, SEL))objc_msgSend)(builtRequest, builder);
-    }
-    if ([builtRequest isKindOfClass:NSURLRequest.class]) {
+    NSURLRequest *builtRequest = YTKACEURLRequestFromObject(request);
+    if (builtRequest != nil) {
         NSURLRequest *URLRequest = builtRequest;
         YTKACESABRSetNativeRequest(URLRequest);
         YTKACEDownloadLog(@"native", @"request host=%@ bytes=%lu",
@@ -200,6 +367,7 @@ static NSString *YTKACERequestVideoID(id request) {
 
 static void YTKACECaptureService(id receiver, id request) {
     NSString *videoID = YTKACERequestVideoID(request);
+    if (videoID.length != 0) YTKACELastCapturedVideoID = videoID;
     YTKACESABRSetCurrentVideoID(videoID);
     id requestCopy = YTKACECopyObject(request);
     @synchronized (YTKACESABRDownloader.class) {
@@ -264,6 +432,7 @@ static void YTKACEMakePrefetchPlayerRequest(id receiver,
 
 static void YTKACECaptureFactory(id receiver, id request, id properties, id result) {
     NSString *videoID = YTKACERequestVideoID(request);
+    if (videoID.length != 0) YTKACELastCapturedVideoID = videoID;
     YTKACESABRSetCurrentVideoID(videoID);
     @synchronized (YTKACESABRDownloader.class) {
         YTKACELastPlayerFactory = receiver;

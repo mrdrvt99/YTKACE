@@ -1,4 +1,5 @@
 #import "YTKACESettingsPages.h"
+#import "YTKACEDownloadsController.h"
 #import "../Runtime/Hooking.h"
 
 #import <UIKit/UIKit.h>
@@ -94,6 +95,11 @@ static void YTKACEUpdateNativeSettingsSection(id receiver, SEL selector,
         return;
     }
     NSArray<NSDictionary *> *definitions = @[
+        @{@"title": @"Downloads", @"builder": [^UIViewController *{
+            YTKACEDownloadsController *controller = [YTKACEDownloadsController new];
+            controller.hidesSettingsButton = YES;
+            return controller;
+        } copy]},
         @{@"title": @"Player Controls", @"builder": [^UIViewController *{ return YTKACEMakePlayerControlsController(); } copy]},
         @{@"title": @"SponsorBlock", @"builder": [^UIViewController *{ return YTKACEMakeSponsorBlockController(); } copy]},
         @{@"title": @"Tab Bar", @"builder": [^UIViewController *{ return YTKACEMakeTabBarOptionsController(); } copy]},

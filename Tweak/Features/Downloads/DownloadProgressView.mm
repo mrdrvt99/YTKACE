@@ -1,4 +1,5 @@
 #import "DownloadProgressView.h"
+#import "../../Runtime/Preferences.h"
 
 #import <UIKit/UIKit.h>
 
@@ -32,6 +33,25 @@
 
 @implementation YTKACEDownloadProgressView
 
+- (void)applyTheme {
+    UITraitCollection *traits = self.keyWindow.traitCollection ?:
+        UIScreen.mainScreen.traitCollection;
+    BOOL oled = YTKACEOLEDActive(traits);
+    BOOL dark = traits.userInterfaceStyle == UIUserInterfaceStyleDark;
+    self.card.backgroundColor = oled ? UIColor.blackColor :
+        (dark ? YTKACEInterfaceSurfaceColor(traits) : UIColor.systemBackgroundColor);
+    self.thumbnailView.backgroundColor = YTKACEInterfaceSurfaceColor(traits);
+    self.titleLabel.textColor = UIColor.labelColor;
+    self.statusLabel.textColor = UIColor.secondaryLabelColor;
+    self.percentLabel.textColor = UIColor.labelColor;
+    self.cancelButton.tintColor = UIColor.tertiaryLabelColor;
+    self.progressView.trackTintColor = oled
+        ? [UIColor colorWithWhite:0.18 alpha:1.0]
+        : UIColor.systemGray4Color;
+    self.card.layer.borderWidth = dark ? 0.0 : 0.5;
+    self.card.layer.borderColor = UIColor.separatorColor.CGColor;
+}
+
 + (instancetype)sharedView {
     static YTKACEDownloadProgressView *view;
     static dispatch_once_t onceToken;
@@ -51,7 +71,6 @@
 
 - (void)makeUI {
     self.card = [[UIView alloc] initWithFrame:CGRectMake(12.0, 0.0, 360.0, 72.0)];
-    self.card.backgroundColor = [UIColor colorWithWhite:0.10 alpha:0.98];
     self.card.layer.cornerRadius = 12.0;
     self.card.layer.shadowColor = UIColor.blackColor.CGColor;
     self.card.layer.shadowOpacity = 0.24;
@@ -68,40 +87,35 @@
     self.thumbnailView.contentMode = UIViewContentModeScaleAspectFill;
     self.thumbnailView.clipsToBounds = YES;
     self.thumbnailView.layer.cornerRadius = 8.0;
-    self.thumbnailView.backgroundColor = [UIColor colorWithWhite:0.22 alpha:1.0];
     [self.card addSubview:self.thumbnailView];
 
     self.titleLabel = [UILabel new];
     self.titleLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
-    self.titleLabel.textColor = UIColor.whiteColor;
     self.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     [self.card addSubview:self.titleLabel];
 
     self.statusLabel = [UILabel new];
     self.statusLabel.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightRegular];
-    self.statusLabel.textColor = UIColor.secondaryLabelColor;
     [self.card addSubview:self.statusLabel];
 
     self.percentLabel = [UILabel new];
     self.percentLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightBold];
-    self.percentLabel.textColor = UIColor.whiteColor;
     self.percentLabel.textAlignment = NSTextAlignmentRight;
     [self.card addSubview:self.percentLabel];
 
     self.cancelButton = [UIButton buttonWithType:UIButtonTypeSystem];
     UIImage *close = [UIImage systemImageNamed:@"xmark.circle.fill"];
     [self.cancelButton setImage:close forState:UIControlStateNormal];
-    self.cancelButton.tintColor = UIColor.systemGray3Color;
     [self.cancelButton addTarget:self action:@selector(cancelTapped)
                 forControlEvents:UIControlEventTouchUpInside];
     [self.card addSubview:self.cancelButton];
 
     self.progressView = [[UIProgressView alloc]
         initWithProgressViewStyle:UIProgressViewStyleDefault];
-    self.progressView.trackTintColor = [UIColor colorWithWhite:0.24 alpha:1.0];
     self.progressView.progressTintColor = UIColor.systemBlueColor;
     self.progressView.transform = CGAffineTransformMakeScale(1.0, 2.4);
     [self.card addSubview:self.progressView];
+    [self applyTheme];
 }
 
 - (UIWindow *)keyWindow {
@@ -141,6 +155,7 @@
         [window addSubview:self.card];
     }
     [window bringSubviewToFront:self.card];
+    [self applyTheme];
     [self layoutCard];
     [self.positionTimer invalidate];
     __weak YTKACEDownloadProgressView *weakSelf = self;
@@ -163,6 +178,7 @@
 - (void)renderItem:(YTKACEDownloadProgressItem *)item {
     if (item == nil) return;
     [self attach];
+    [self applyTheme];
     self.titleLabel.text = item.title;
     NSString *count = @"";
     if (self.activeIdentifiers.count > 1) {

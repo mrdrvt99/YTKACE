@@ -7,7 +7,9 @@ FOUNDATION_EXPORT NSString * const YTKACEVersion;
 void YTKACEInstallAdsHooks(void);
 void YTKACEInstallSponsorBlockHooks(void);
 void YTKACEInstallDownloadHooks(void);
+void YTKACEInstallGlobalDownloadMiniPlayer(void);
 void YTKACEInstallOLEDHooks(void);
+void YTKACEInstallStartupHooks(void);
 void YTKACEInstallPremiumLogoHooks(void);
 void YTKACEInstallBackgroundPlaybackHooks(void);
 void YTKACEInstallPiPHooks(void);
@@ -30,6 +32,7 @@ void YTKACEInstallContentVisibilityHooks(void);
 void YTKACEInstallNavigationVisibilityHooks(void);
 void YTKACEInstallMiscellaneousHooks(void);
 void YTKACEInstallCopyCommentHooks(void);
+void YTKACEInstallProfilePictureHooks(void);
 void YTKACEScheduleFirstLaunch(void);
 
 NS_ASSUME_NONNULL_END

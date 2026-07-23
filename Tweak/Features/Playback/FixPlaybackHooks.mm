@@ -65,7 +65,6 @@ static IMP OrigCacheKeyRelax, OrigStreamingWatchEnabled, OrigPlayerRespCacheToke
 static __weak id gCurrentController = nil;
 static BOOL gIsRefetching = NO;
 static NSTimeInterval gLastRefetchAt = 0.0;
-static NSTimer *gProactiveTimer = nil;
 static NSMutableDictionary<NSValue *, NSTimer *> *gTimersByController = nil;
 
 static BOOL CallBool(IMP fn, id r, SEL s) {
@@ -319,11 +318,8 @@ static void FinishLPCLoad(id self) {
     if (!FixOn()) return;
     gLastRefetchAt = 0.0;
     gIsRefetching = NO;
-    [gProactiveTimer invalidate];
-    gProactiveTimer = nil;
     gCurrentController = self;
     H_YTKPRegisterNotifications(self, NULL);
-    H_YTKPStartProactiveTimer(self, NULL);
 }
 
 static void H_LPCLoadTransObject(id self, SEL sel, id trans, id cfg, id initialTime) {
@@ -385,7 +381,6 @@ static void H_LPCInitPlayback(id self, SEL sel) {
     if (!FixOn()) return;
     gCurrentController = self;
     H_YTKPRegisterNotifications(self, NULL);
-    H_YTKPStartProactiveTimer(self, NULL);
 }
 
 static void H_YTKPRegisterNotifications(id self, SEL _cmd) {
@@ -400,21 +395,8 @@ static void H_YTKPRegisterNotifications(id self, SEL _cmd) {
 }
 
 static void H_YTKPStartProactiveTimer(id self, SEL _cmd) {
+    (void)self;
     (void)_cmd;
-    [gProactiveTimer invalidate];
-    gProactiveTimer = nil;
-    __weak id weakSelf = self;
-    gProactiveTimer = [NSTimer scheduledTimerWithTimeInterval:45.0
-                                                      repeats:YES
-                                                        block:^(NSTimer * _Nonnull timer) {
-        id strong = weakSelf;
-        if (!strong || strong != gCurrentController) {
-            [timer invalidate];
-            return;
-        }
-        gLastRefetchAt = 0.0;
-        [[NSNotificationCenter defaultCenter] postNotificationName:kNeedsRefetch object:nil];
-    }];
 }
 
 static void H_YTKPHandleRefetch(id self, SEL _cmd, NSNotification *note) {
